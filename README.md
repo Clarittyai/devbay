@@ -2,6 +2,10 @@
 
 **Parallel, isolated local environments for coding agents.**
 
+[![CI](https://github.com/Clarittyai/devbay/actions/workflows/ci.yml/badge.svg)](https://github.com/Clarittyai/devbay/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/Clarittyai/devbay.svg)](https://pkg.go.dev/github.com/Clarittyai/devbay)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 Status: working end to end. `devbay init` proposes a manifest, bays boot with their own hostname and browser origin, tasks return typed failures, and teardown leaves nothing behind. Driven by a CLI or by an agent over MCP.
 
 ---
@@ -52,10 +56,29 @@ env:
 
 This matters because **`*.localhost` does not resolve outside browsers**. Verified on macOS 14: `getaddrinfo` fails at every depth, so Node, Go, Python and Safari all get `ENOTFOUND`; only Chrome, Firefox and curl special-case it. A health probe or an SSR fetch aimed at a `.localhost` hostname would simply fail.
 
+## Install
+
+```sh
+go install github.com/Clarittyai/devbay/cmd/devbay@latest
+```
+
+Or download a binary from [releases](https://github.com/Clarittyai/devbay/releases)
+and verify it:
+
+```sh
+shasum -a 256 -c checksums.txt --ignore-missing
+```
+
+devbay needs Go 1.26+ to build and a container runtime to run — Docker Desktop,
+OrbStack, and Colima all work. Run `devbay doctor` first; it reports what it
+found and what it thinks of it, including the memory configuration that causes
+a whole class of "it got slow after a few bays" problems.
+
 ## Try it
 
 ```
-go build -o bin/devbay ./cmd/devbay
+git clone https://github.com/Clarittyai/devbay && cd devbay
+make build
 
 bin/devbay doctor                     # is this machine set up well?
 bin/devbay init                       # propose a devbay.yaml for this repo
