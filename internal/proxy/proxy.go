@@ -134,6 +134,13 @@ func (p *Proxy) Ensure(ctx context.Context, httpPort, adminPort int) error {
 		}
 	}
 
+	// Pulled before the bind loop rather than inside it, so a missing image is
+	// reported once as a missing image instead of once per candidate port as a
+	// container that would not start.
+	if err := p.ensureImage(ctx); err != nil {
+		return err
+	}
+
 	candidates := []int{httpPort}
 	if httpPort == 0 {
 		// Port 80 is what makes a bare hostname work with no port suffix.
@@ -166,6 +173,33 @@ func (p *Proxy) Ensure(ctx context.Context, httpPort, adminPort int) error {
 		return p.syncRoutes(ctx)
 	}
 	return fmt.Errorf("proxy: could not start on any of %v: %w", candidates, lastErr)
+}
+
+// ensureImage pulls the proxy image when the machine does not have it.
+//
+// Every other image devbay runs comes from a manifest and is pulled by the
+// engine; this one is devbay's own and was assumed to be present, which is
+// true on any machine that has run devbay before and false on a fresh one --
+// so the first run on a clean machine failed with "No such image" from deep
+// inside a port-binding retry loop.
+func (p *Proxy) ensureImage(ctx context.Context) error {
+	found, err := p.cli.ImageList(ctx, client.ImageListOptions{
+		Filters: make(client.Filters).Add("reference", Image),
+	})
+	if err == nil && len(found.Items) > 0 {
+		return nil
+	}
+	p.Log("proxy: pulling %s", Image)
+	resp, err := p.cli.ImagePull(ctx, Image, client.ImagePullOptions{})
+	if err != nil {
+		return fmt.Errorf("proxy: pulling %s: %w", Image, err)
+	}
+	defer resp.Close()
+	// The body must be drained for the pull to complete.
+	if err := resp.Wait(ctx); err != nil {
+		return fmt.Errorf("proxy: pulling %s: %w", Image, err)
+	}
+	return nil
 }
 
 func (p *Proxy) create(ctx context.Context, httpPort, adminPort int) (string, error) {
