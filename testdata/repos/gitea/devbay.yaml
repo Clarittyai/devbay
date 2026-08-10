@@ -1,0 +1,132 @@
+# Fixture 4 of 5 — Go service with a Vite frontend, Postgres, Elasticsearch.
+#
+# Hand-written for the M−1 spec gate. Derived from the repo's own Makefile
+# and .github/workflows/pull-db-tests.yml at the pinned commit.
+#
+# What this fixture is here to prove:
+#   - a compiled-language service needs no new constructs
+#   - `make watch` (which runs watch-frontend and watch-backend concurrently)
+#     is two services, not one — the same decomposition as a Procfile
+#   - `go test -json` is a streaming format, not a file, which is why `report`
+#     has a `go-json` variant rather than assuming JUnit everywhere
+#   - image digests are real and available: these are copied verbatim from the
+#     repo's CI, which already pins them. This is the strongest evidence in the
+#     fixture set that CI is the highest-signal input for M3 introspection.
+
+version: 1
+project: gitea
+
+services:
+  db:
+    image: postgres:14@sha256:2f439458ab6a57a925825ae14f9d06910e4fe4a41c8d4a0ae06397e65b707e1b
+    fork: image
+    seed:
+      after: [migrate]
+      sources: ["models/migrations/**"]
+    port: 5432
+    env:
+      POSTGRES_DB: gitea
+      POSTGRES_USER: gitea
+      POSTGRES_PASSWORD: postgres
+    health:
+      cmd: [pg_isready, -U, gitea]
+
+  search:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.15@sha256:aeda96cd85b0cadeb3a3b900789f3b85e902c994052dadbaf8dd99a539e2ef93
+    port: 9200
+    env:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.ml.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    health:
+      http: /_cluster/health
+      timeout: 180s
+      start_period: 30s
+
+  migrate:
+    kind: oneshot
+    image: golang:1.25-bookworm
+    needs: [db]
+    run: [go, run, ./cmd/gitea, migrate]
+    volumes: [.go-cache]
+    egress: [proxy.golang.org, sum.golang.org]
+    env:
+      GITEA__database__DB_TYPE: postgres
+      GITEA__database__HOST: ${bay.db.host}:${bay.db.port}
+      GITEA__database__NAME: gitea
+      GITEA__database__USER: gitea
+      GITEA__database__PASSWD: postgres
+
+  # Makefile target `watch` runs watch-frontend and watch-backend together.
+  # Split, because they have different toolchains, different watch globs, and
+  # different failure modes — and because only one of them serves a port.
+  frontend:
+    image: node:22-bookworm
+    install: [npm, ci]
+    start: [npm, run, watch-client]
+    volumes: [node_modules, public/assets]
+    watch: ["web_src/**", "package.json"]
+    watch_action: restart
+    egress: [registry.npmjs.org]
+    health:
+      log: "built in [0-9.]+m?s"
+      timeout: 300s
+
+  web:
+    image: golang:1.25-bookworm
+    primary: true
+    port: 3000
+    ports:
+      ssh: 2222
+    needs: [db, search, migrate, frontend]
+    start: [go, run, ./cmd/gitea, web]
+    volumes: [.go-cache, custom]
+    watch: ["**/*.go", "templates/**", "go.mod"]
+    watch_action: rebuild
+    egress: [proxy.golang.org, sum.golang.org]
+    health:
+      http: /api/healthz
+      timeout: 300s
+      start_period: 45s
+    env:
+      GITEA__database__DB_TYPE: postgres
+      GITEA__database__HOST: ${bay.db.host}:${bay.db.port}
+      GITEA__database__NAME: gitea
+      GITEA__database__USER: gitea
+      GITEA__database__PASSWD: postgres
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__server__SSH_PORT: ${bay.web.ports.ssh}
+      # Gitea writes absolute URLs into clone instructions and webhooks, so
+      # this must be the browser-facing origin, not the container address.
+      GITEA__server__ROOT_URL: ${bay.web.public_url}
+      GITEA__indexer__ISSUE_INDEXER_TYPE: elasticsearch
+      GITEA__indexer__ISSUE_INDEXER_CONN_STR: ${bay.search.url}
+
+tasks:
+  # `go test -json` emits a newline-delimited event stream rather than a
+  # report file, so it is parsed incrementally and gives live progress.
+  # Everything else in this fixture set writes JUnit XML to a path.
+  unit:
+    run: [go, test, -json, ./...]
+    needs: []
+    in: web
+    timeout: 30m
+    report:
+      format: go-json
+
+  integration:
+    run: [make, test-pgsql]
+    needs: [db]
+    in: web
+    timeout: 45m
+    report:
+      format: go-json
+
+  lint:
+    run: [make, lint-backend]
+    needs: []
+
+  lint-frontend:
+    run: [npm, run, lint]
+    needs: []

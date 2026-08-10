@@ -1,0 +1,180 @@
+# Fixture 5 of 5 — FastAPI + Postgres + React/Vite frontend + mail catcher.
+#
+# Hand-written for the M−1 spec gate. Derived from the repo's own compose.yml
+# and compose.override.yml at the pinned commit.
+#
+# What this fixture is here to prove:
+#   - the repo already ships the exact pattern the schema now calls `oneshot`:
+#     a `prestart` service that other services wait on via
+#     `depends_on: {condition: service_completed_successfully}`. This was not
+#     invented for devbay; it is a convergent solution to a real ordering
+#     problem, which is the strongest possible evidence for finding G3.
+#   - the repo already ships host-side `develop.watch` with sync/rebuild
+#     actions, independently validating the C4 watch design
+#   - a repo that ships its OWN reverse proxy (traefik) is simply omitted from
+#     the manifest — devbay's proxy replaces it and they would fight over :80
+
+version: 1
+project: fastapi-template
+
+services:
+  db:
+    image: postgres:18
+    fork: image
+    seed:
+      after: [prestart]
+      sources: ["backend/app/alembic/versions/**", "backend/app/initial_data.py"]
+    port: 5432
+    env:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: changethis
+      POSTGRES_DB: app
+    health:
+      cmd: [pg_isready, -U, postgres, -d, app]
+
+  mail:
+    image: axllent/mailpit
+    port: 8025
+    ports:
+      smtp: 1025
+    health:
+      http: /readyz
+
+  # The repo's own `prestart` service, verbatim in intent:
+  #   command: bash scripts/prestart.sh
+  #   depends_on: {db: {condition: service_healthy}}
+  # and backend waits on it with service_completed_successfully.
+  #
+  # The repo writes it as a shell script, which R1 forbids as a manifest
+  # value. The script's contents are three ordered steps, so they become three
+  # oneshots — which also turns one opaque failure into three located ones.
+  wait-db:
+    kind: oneshot
+    image: python:3.12-bookworm
+    needs: [db]
+    install: [uv, sync, --locked]
+    run: [uv, run, python, app/backend_pre_start.py]
+    workdir: /workspace/backend
+    volumes: [backend/.venv]
+    egress: [pypi.org, files.pythonhosted.org]
+    env:
+      POSTGRES_SERVER: ${bay.db.host}
+      POSTGRES_PORT: ${bay.db.port}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: changethis
+      POSTGRES_DB: app
+
+  alembic:
+    kind: oneshot
+    image: python:3.12-bookworm
+    needs: [wait-db]
+    run: [uv, run, alembic, upgrade, head]
+    workdir: /workspace/backend
+    volumes: [backend/.venv]
+    env:
+      POSTGRES_SERVER: ${bay.db.host}
+      POSTGRES_PORT: ${bay.db.port}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: changethis
+      POSTGRES_DB: app
+
+  prestart:
+    kind: oneshot
+    image: python:3.12-bookworm
+    needs: [alembic]
+    run: [uv, run, python, app/initial_data.py]
+    workdir: /workspace/backend
+    volumes: [backend/.venv]
+    env:
+      POSTGRES_SERVER: ${bay.db.host}
+      POSTGRES_PORT: ${bay.db.port}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: changethis
+      POSTGRES_DB: app
+      FIRST_SUPERUSER: admin@example.com
+      FIRST_SUPERUSER_PASSWORD: ${secret:fastapi-template/first-superuser}
+
+  backend:
+    image: python:3.12-bookworm
+    port: 8000
+    needs: [db, mail, prestart]
+    install: [uv, sync, --locked]
+    start: [uv, run, fastapi, dev, app/main.py, --host, "0.0.0.0", --port, "8000"]
+    workdir: /workspace/backend
+    volumes: [backend/.venv]
+    # Mirrors the repo's own compose `develop.watch` block, evaluated by the
+    # daemon on the host rather than by a poller inside the container.
+    watch: ["backend/app/**", "backend/pyproject.toml"]
+    watch_action: sync
+    egress: [pypi.org, files.pythonhosted.org]
+    health:
+      http: /api/v1/utils/health-check/
+      timeout: 90s
+      start_period: 10s
+    env:
+      POSTGRES_SERVER: ${bay.db.host}
+      POSTGRES_PORT: ${bay.db.port}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: changethis
+      POSTGRES_DB: app
+      SMTP_HOST: ${bay.mail.host}
+      SMTP_PORT: ${bay.mail.ports.smtp}
+      SECRET_KEY: ${secret:fastapi-template/secret-key}
+      # CORS must name the origin the BROWSER uses, so this is plane 3 —
+      # the mirror image of the SSR case in the documenso fixture.
+      BACKEND_CORS_ORIGINS: ${bay.frontend.public_url}
+
+  frontend:
+    image: node:22-bookworm
+    primary: true
+    port: 5173
+    needs: [backend]
+    install: [npm, ci]
+    start: [npm, run, dev, --, --host, "0.0.0.0"]
+    volumes: [node_modules]
+    watch: ["frontend/src/**", "frontend/package.json"]
+    watch_action: restart
+    egress: [registry.npmjs.org]
+    health:
+      log: "ready in [0-9]+ ?ms"
+      timeout: 120s
+    env:
+      # Consumed by the browser bundle, so plane 3, not plane 1.
+      VITE_API_URL: ${bay.backend.public_url}
+
+tasks:
+  # The repo's backend/scripts/test.sh is:
+  #   FASTAPI_ENV=development coverage run -m pytest tests/
+  # The inline env prefix is shell syntax; it moves to `env`.
+  unit:
+    run: [uv, run, coverage, run, -m, pytest, tests/, --junit-xml=reports/unit.xml]
+    needs: [db]
+    in: backend
+    timeout: 15m
+    env:
+      FASTAPI_ENV: development
+    report:
+      format: junit
+      path: backend/reports/unit.xml
+
+  e2e:
+    run: [npx, playwright, test, --reporter=junit]
+    needs: [frontend, backend, db, mail]
+    in: frontend
+    timeout: 20m
+    report:
+      format: junit
+      path: frontend/reports/junit.xml
+
+  lint:
+    run: [uv, run, ruff, check, .]
+    needs: []
+
+  typecheck:
+    run: [uv, run, mypy, app]
+    needs: []
+
+externals:
+  smtp:
+    emulate: mailpit
+    real: never

@@ -1,0 +1,6 @@
+{
+  "repo": "https://github.com/mastodon/mastodon",
+  "commit": "39881d47e4c8e678904f95cfbf8ef11fe9fb04a6",
+  "clone": "git clone --depth 1 https://github.com/mastodon/mastodon.git",
+  "note": "devbay.yaml in this directory was hand-written against this exact commit for the M-1 spec gate."
+}

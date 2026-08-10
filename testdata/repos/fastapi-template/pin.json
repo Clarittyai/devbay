@@ -1,0 +1,6 @@
+{
+  "repo": "https://github.com/fastapi/full-stack-fastapi-template",
+  "commit": "029e92925329c537dd48bd01e5b5a09cf27bb7c4",
+  "clone": "git clone --depth 1 https://github.com/fastapi/full-stack-fastapi-template.git",
+  "note": "devbay.yaml in this directory was hand-written against this exact commit for the M-1 spec gate."
+}

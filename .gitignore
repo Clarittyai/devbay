@@ -1,0 +1,18 @@
+# Build output
+/bin/
+/dist/
+*.test
+
+# Local state
+.devbay/
+*.db
+
+# Python tooling used only for the M-1 spec gate
+__pycache__/
+.venv/
+
+# macOS
+.DS_Store
+
+# Fixture repos are cloned on demand from the pins, never committed
+/testdata/repos/*/checkout/

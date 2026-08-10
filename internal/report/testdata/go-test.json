@@ -1,0 +1,23 @@
+{"Time":"2026-08-10T11:45:14.975212-05:00","Action":"start","Package":"rf"}
+{"Time":"2026-08-10T11:45:15.249673-05:00","Action":"run","Package":"rf","Test":"TestPasses"}
+{"Time":"2026-08-10T11:45:15.249894-05:00","Action":"output","Package":"rf","Test":"TestPasses","Output":"=== RUN   TestPasses\n"}
+{"Time":"2026-08-10T11:45:15.249969-05:00","Action":"output","Package":"rf","Test":"TestPasses","Output":"--- PASS: TestPasses (0.00s)\n"}
+{"Time":"2026-08-10T11:45:15.24999-05:00","Action":"pass","Package":"rf","Test":"TestPasses","Elapsed":0}
+{"Time":"2026-08-10T11:45:15.250009-05:00","Action":"run","Package":"rf","Test":"TestFailsWithMessage"}
+{"Time":"2026-08-10T11:45:15.250024-05:00","Action":"output","Package":"rf","Test":"TestFailsWithMessage","Output":"=== RUN   TestFailsWithMessage\n"}
+{"Time":"2026-08-10T11:45:15.250045-05:00","Action":"output","Package":"rf","Test":"TestFailsWithMessage","Output":"    a_test.go:8: expected 42, got 7\n"}
+{"Time":"2026-08-10T11:45:15.250062-05:00","Action":"output","Package":"rf","Test":"TestFailsWithMessage","Output":"--- FAIL: TestFailsWithMessage (0.00s)\n"}
+{"Time":"2026-08-10T11:45:15.250077-05:00","Action":"fail","Package":"rf","Test":"TestFailsWithMessage","Elapsed":0}
+{"Time":"2026-08-10T11:45:15.250096-05:00","Action":"run","Package":"rf","Test":"TestSkipped"}
+{"Time":"2026-08-10T11:45:15.250112-05:00","Action":"output","Package":"rf","Test":"TestSkipped","Output":"=== RUN   TestSkipped\n"}
+{"Time":"2026-08-10T11:45:15.250139-05:00","Action":"output","Package":"rf","Test":"TestSkipped","Output":"    a_test.go:11: not today\n"}
+{"Time":"2026-08-10T11:45:15.250157-05:00","Action":"output","Package":"rf","Test":"TestSkipped","Output":"--- SKIP: TestSkipped (0.00s)\n"}
+{"Time":"2026-08-10T11:45:15.250173-05:00","Action":"skip","Package":"rf","Test":"TestSkipped","Elapsed":0}
+{"Time":"2026-08-10T11:45:15.250188-05:00","Action":"run","Package":"rf","Test":"TestFatal"}
+{"Time":"2026-08-10T11:45:15.250202-05:00","Action":"output","Package":"rf","Test":"TestFatal","Output":"=== RUN   TestFatal\n"}
+{"Time":"2026-08-10T11:45:15.250217-05:00","Action":"output","Package":"rf","Test":"TestFatal","Output":"    a_test.go:14: connection refused: dial tcp 127.0.0.1:5432\n"}
+{"Time":"2026-08-10T11:45:15.250234-05:00","Action":"output","Package":"rf","Test":"TestFatal","Output":"--- FAIL: TestFatal (0.00s)\n"}
+{"Time":"2026-08-10T11:45:15.250246-05:00","Action":"fail","Package":"rf","Test":"TestFatal","Elapsed":0}
+{"Time":"2026-08-10T11:45:15.250257-05:00","Action":"output","Package":"rf","Output":"FAIL\n"}
+{"Time":"2026-08-10T11:45:15.251799-05:00","Action":"output","Package":"rf","Output":"FAIL\trf\t0.275s\n"}
+{"Time":"2026-08-10T11:45:15.251858-05:00","Action":"fail","Package":"rf","Elapsed":0.277}

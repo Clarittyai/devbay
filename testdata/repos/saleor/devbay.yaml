@@ -1,0 +1,156 @@
+# Fixture 3 of 5 — Django + GraphQL, uv-managed Python, Postgres, Celery worker.
+#
+# Hand-written for the M−1 spec gate. Derived from the repo's own
+# .devcontainer/docker-compose.yml, Dockerfile, and .github/workflows/e2e.yml
+# at the pinned commit.
+#
+# What this fixture is here to prove:
+#   - a Python/uv stack needs no constructs a Node or Ruby stack did not
+#   - `--junit-xml` is already how this repo's CI surfaces results, which is
+#     direct evidence for the `report` key rather than a guess
+#   - a Celery worker is the second independent occurrence of the
+#     no-port-nothing-to-probe problem (finding G2)
+
+version: 1
+project: saleor
+
+services:
+  db:
+    image: postgres:15-alpine
+    fork: image
+    seed:
+      after: [migrate, populatedb]
+      sources: ["saleor/**/migrations/**"]
+    port: 5432
+    env:
+      POSTGRES_USER: saleor
+      POSTGRES_PASSWORD: saleor
+      POSTGRES_DB: saleor
+    health:
+      cmd: [pg_isready, -U, saleor]
+
+  redis:
+    image: redis:7-alpine
+    fork: prefix
+    port: 6379
+    health:
+      cmd: [redis-cli, ping]
+
+  migrate:
+    kind: oneshot
+    image: python:3.12-bookworm
+    needs: [db]
+    install: [uv, sync, --locked]
+    run: [uv, run, python, manage.py, migrate, --no-input]
+    volumes: [.venv]
+    egress: [pypi.org, files.pythonhosted.org]
+    env:
+      DATABASE_URL: ${bay.db.url}
+      SECRET_KEY: ${secret:saleor/django-secret}
+
+  populatedb:
+    kind: oneshot
+    image: python:3.12-bookworm
+    needs: [migrate]
+    run: [uv, run, python, manage.py, populatedb, --createsuperuser]
+    volumes: [.venv]
+    env:
+      DATABASE_URL: ${bay.db.url}
+      SECRET_KEY: ${secret:saleor/django-secret}
+
+  # collectstatic is a build step in the repo's Dockerfile, run with
+  # `SECRET_KEY=dummy python3 manage.py collectstatic --no-input`. Inline
+  # `VAR=value` prefixes are shell syntax, not argv — decomposed into `env`.
+  collectstatic:
+    kind: oneshot
+    image: python:3.12-bookworm
+    run: [uv, run, python, manage.py, collectstatic, --no-input]
+    volumes: [.venv, static]
+    env:
+      SECRET_KEY: dummy
+      STATIC_URL: /static/
+
+  api:
+    image: python:3.12-bookworm
+    primary: true
+    port: 8000
+    needs: [db, redis, populatedb, collectstatic]
+    install: [uv, sync, --locked]
+    start: [uv, run, python, manage.py, runserver, "0.0.0.0:8000"]
+    volumes: [.venv, static]
+    watch: ["saleor/**", "pyproject.toml"]
+    watch_action: restart
+    egress: [pypi.org, files.pythonhosted.org]
+    health:
+      http: /health/
+      timeout: 120s
+      start_period: 15s
+    env:
+      DATABASE_URL: ${bay.db.url}
+      CELERY_BROKER_URL: ${bay.redis.url}
+      SECRET_KEY: ${secret:saleor/django-secret}
+      ALLOWED_HOSTS: "*"
+      DEBUG: "True"
+      # Server-side: plane 1. The storefront's browser-facing URL would be
+      # public_url; this one is consumed by Python inside the container.
+      API_URL: ${bay.api.url}
+
+  # Third occurrence of the no-port worker. Celery prints a banner ending in
+  # "ready." on boot, so this gets a real readiness probe rather than the
+  # liveness-only fallback.
+  worker:
+    image: python:3.12-bookworm
+    needs: [db, redis, populatedb]
+    install: [uv, sync, --locked]
+    start: [uv, run, celery, -A, saleor.celeryconf, worker, --loglevel=info]
+    volumes: [.venv]
+    watch: ["saleor/**"]
+    watch_action: restart
+    egress: [pypi.org, files.pythonhosted.org]
+    health:
+      log: "celery@.* ready\\."
+      timeout: 120s
+    env:
+      DATABASE_URL: ${bay.db.url}
+      CELERY_BROKER_URL: ${bay.redis.url}
+      SECRET_KEY: ${secret:saleor/django-secret}
+
+tasks:
+  # The repo's own CI runs exactly this, minus the marker:
+  #   uv run pytest -m "e2e" --junit-xml=e2e-test-results.xml
+  unit:
+    run: [uv, run, pytest, -m, "not e2e", --junit-xml=reports/unit.xml, -p, "no:cacheprovider"]
+    needs: [db]
+    in: api
+    timeout: 30m
+    report:
+      format: junit
+      path: reports/unit.xml
+
+  e2e:
+    run: [uv, run, pytest, -m, e2e, --junit-xml=reports/e2e.xml]
+    needs: [api, db, redis, worker]
+    in: api
+    timeout: 30m
+    report:
+      format: junit
+      path: reports/e2e.xml
+
+  lint:
+    run: [uv, run, ruff, check, .]
+    needs: []
+
+  typecheck:
+    run: [uv, run, mypy, saleor]
+    needs: []
+
+externals:
+  s3:
+    emulate: minio
+    real: gated
+  smtp:
+    emulate: mailpit
+    real: never
+  stripe:
+    emulate: stripe-mock
+    real: gated

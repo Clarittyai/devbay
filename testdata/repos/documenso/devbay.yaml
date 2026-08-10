@@ -1,0 +1,168 @@
+# Fixture 1 of 5 — Node monorepo (npm workspaces + turbo), React Router SSR app,
+# Prisma/Postgres, Redis, S3-compatible storage, SMTP, and a document-conversion sidecar.
+#
+# Hand-written for the M−1 spec gate. Derived from the repo's own
+# docker/development/compose.yml and package.json at the pinned commit.
+#
+# What this fixture is here to prove:
+#   - a monorepo whose dev command is a shell `&&` chain decomposes into argv
+#   - services that expose more than one port are expressible
+#   - a repo that genuinely requires install scripts is expressible and visible
+#   - a task wrapper (start-server-and-test) becomes unnecessary once `needs` exists
+
+version: 1
+project: documenso
+
+services:
+  db:
+    image: postgres:15
+    fork: image
+    seed:
+      after: [migrate, seed-data]
+      sources: ["packages/prisma/migrations/**", "packages/prisma/seed/**"]
+    port: 5432
+    env:
+      POSTGRES_USER: documenso
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: documenso
+    health:
+      cmd: [pg_isready, -U, documenso]
+      timeout: 30s
+
+  redis:
+    image: redis:8-alpine
+    fork: prefix
+    port: 6379
+    health:
+      cmd: [redis-cli, ping]
+
+  # Two ports on one service: the S3 API the app talks to, and the human console.
+  # A single `port` integer could not describe this — the gate's finding G1.
+  storage:
+    image: minio/minio
+    port: 9002
+    ports:
+      console: 9001
+    env:
+      MINIO_ROOT_USER: documenso
+      MINIO_ROOT_PASSWORD: password
+    health:
+      http: /minio/health/live
+
+  # Three ports: web UI, SMTP, POP3. Mailpit rather than the repo's inbucket —
+  # devbay owns emulator launch configuration, so the manifest names the role,
+  # not the entrypoint. Note the repo's compose expresses minio's startup as
+  # `entrypoint: sh -c '...'`, which R1 forbids; routing it through `externals`
+  # keeps that shell out of the manifest entirely.
+  mail:
+    image: axllent/mailpit
+    port: 8025
+    ports:
+      smtp: 1025
+    health:
+      http: /readyz
+
+  # `npm run dx` is: npm ci && npm run dx:up && prisma:migrate-dev && prisma:seed.
+  # The `&&` chain is not expressible under R1, and does not need to be:
+  # each link is a oneshot with a `needs` edge, which also fixes the ordering
+  # bug that a flat setup list would introduce (migrations must complete
+  # BEFORE the app starts, not after everything is healthy).
+  migrate:
+    kind: oneshot
+    image: node:22-bookworm
+    needs: [db]
+    install: [npm, ci]
+    install_scripts: true # patch-package runs as postinstall; see GATE.md finding G4
+    run: [npm, run, prisma:migrate-deploy]
+    volumes: [node_modules]
+    egress: [registry.npmjs.org]
+    env:
+      NEXT_PRIVATE_DATABASE_URL: ${bay.db.url}
+      NEXT_PRIVATE_DIRECT_DATABASE_URL: ${bay.db.url}
+
+  seed-data:
+    kind: oneshot
+    image: node:22-bookworm
+    needs: [migrate]
+    run: [npm, run, prisma:seed]
+    volumes: [node_modules]
+    env:
+      NEXT_PRIVATE_DATABASE_URL: ${bay.db.url}
+
+  # `npm run dev` is `translate:compile && turbo run dev --filter=@documenso/remix`.
+  # The compile step is a oneshot; the server is the service.
+  translate:
+    kind: oneshot
+    image: node:22-bookworm
+    run: [npm, run, translate:compile]
+    volumes: [node_modules]
+
+  web:
+    image: node:22-bookworm
+    primary: true
+    port: 3000
+    needs: [db, redis, storage, mail, seed-data, translate]
+    install: [npm, ci]
+    install_scripts: true
+    start: [npx, turbo, run, dev, --filter, "@documenso/remix"]
+    volumes: [node_modules, apps/remix/.react-router]
+    watch: ["apps/**", "packages/**", "package.json"]
+    watch_action: restart
+    egress: [registry.npmjs.org]
+    health:
+      http: /
+      timeout: 120s
+      start_period: 20s
+    env:
+      NEXT_PRIVATE_DATABASE_URL: ${bay.db.url}
+      NEXT_PRIVATE_DIRECT_DATABASE_URL: ${bay.db.url}
+      NEXT_PRIVATE_REDIS_URL: ${bay.redis.url}
+      NEXT_PRIVATE_SMTP_HOST: ${bay.mail.host}
+      NEXT_PRIVATE_SMTP_PORT: ${bay.mail.ports.smtp}
+      NEXT_PRIVATE_SMTP_TRANSPORT: smtp-auth
+      NEXT_PRIVATE_UPLOAD_ENDPOINT: ${bay.storage.url}
+      NEXT_PUBLIC_UPLOAD_TRANSPORT: s3
+      # The one line in this file that most repays reading. The app is
+      # server-rendered, so it fetches its own API from inside the container
+      # (plane 1) while the browser reaches it by hostname (plane 3). Using
+      # public_url here would break SSR, because *.localhost does not resolve
+      # through getaddrinfo — only Chrome, Firefox and curl special-case it.
+      NEXT_PRIVATE_INTERNAL_WEBAPP_URL: ${bay.web.url}
+      NEXT_PUBLIC_WEBAPP_URL: ${bay.web.public_url}
+      NEXTAUTH_SECRET: ${secret:documenso/nextauth}
+      NEXT_PRIVATE_ENCRYPTION_KEY: ${secret:documenso/encryption-primary}
+      NEXT_PRIVATE_ENCRYPTION_SECONDARY_KEY: ${secret:documenso/encryption-secondary}
+
+tasks:
+  lint:
+    run: [npx, biome, check, .]
+    needs: []
+
+  typecheck:
+    run: [npx, turbo, run, typecheck]
+    needs: []
+
+  # The repo runs this as:
+  #   start-server-and-test "npm run start -w @documenso/remix" http://localhost:3000 "playwright test"
+  # Under devbay the wrapper is dead weight: `needs` already guarantees the
+  # server is up and health-probed before the task starts. This is the clearest
+  # example in the fixture set of the manifest removing work rather than adding it.
+  e2e:
+    run: [npx, playwright, test, --reporter=junit]
+    needs: [web, db, storage, mail]
+    in: web
+    timeout: 20m
+    report:
+      format: junit
+      path: packages/app-tests/results/junit.xml
+
+externals:
+  s3:
+    emulate: minio
+    real: gated
+  smtp:
+    emulate: mailpit
+    real: never
+  stripe:
+    emulate: stripe-mock
+    real: gated

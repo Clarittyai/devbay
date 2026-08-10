@@ -1,0 +1,181 @@
+# Fixture 2 of 5 — Rails 7, Procfile-driven multi-process dev, Postgres + Redis.
+#
+# Hand-written for the M−1 spec gate. Derived from the repo's own Procfile.dev,
+# bin/dev, and .github/workflows/test-ruby.yml at the pinned commit.
+#
+# What this fixture is here to prove:
+#   - a Procfile with four processes maps to four services, not one
+#   - TWO of those four have no port and nothing to probe — this is the case
+#     that forced `health.log` and `health.process` into the schema (finding G2)
+#   - `env VAR=x bundle exec ...` decomposes into an env map plus argv
+#   - repo scripts outside the argv[0] allowlist (bin/rspec) are expressible
+#     and land in the approval flow rather than forcing an escape hatch
+
+version: 1
+project: mastodon
+
+services:
+  db:
+    image: postgres:14-alpine
+    fork: image
+    seed:
+      after: [db-setup]
+      sources: ["db/migrate/**", "db/seeds.rb", "db/schema.rb"]
+    port: 5432
+    env:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    health:
+      cmd: [pg_isready, -U, postgres]
+
+  redis:
+    image: redis:7-alpine
+    fork: prefix
+    port: 6379
+    health:
+      cmd: [redis-cli, ping]
+
+  db-setup:
+    kind: oneshot
+    image: ruby:3.4-bookworm
+    needs: [db, redis]
+    install: [bundle, install]
+    run: [bundle, exec, rails, "db:setup"]
+    volumes: [vendor/bundle]
+    egress: [rubygems.org, index.rubygems.org]
+    env: &rails_env
+      RAILS_ENV: development
+      DB_HOST: ${bay.db.host}
+      DB_PORT: ${bay.db.port}
+      DB_USER: postgres
+      DB_PASS: postgres
+      REDIS_URL: ${bay.redis.url}
+      LOCAL_DOMAIN: ${bay.web.public_url}
+
+  # Procfile.dev line:
+  #   web: env PORT=3000 RAILS_ENV=development bundle exec puma -C config/puma.rb
+  # `env VAR=x` as argv[0] would be legal under R1 but is worse than useless —
+  # it hides configuration inside a command. Decomposed into `env` + argv.
+  web:
+    image: ruby:3.4-bookworm
+    primary: true
+    port: 3000
+    needs: [db, redis, db-setup, assets]
+    install: [bundle, install]
+    start: [bundle, exec, puma, -C, config/puma.rb]
+    volumes: [vendor/bundle, tmp, public/packs]
+    watch: ["app/**", "config/**", "lib/**", "Gemfile"]
+    watch_action: restart
+    egress: [rubygems.org, index.rubygems.org]
+    health:
+      http: /health
+      timeout: 180s
+      start_period: 30s
+    env:
+      <<: *rails_env
+      PORT: "3000"
+
+  # Procfile.dev line: `stream: env PORT=4000 yarn workspace @mastodon/streaming start`
+  streaming:
+    image: node:22-bookworm
+    port: 4000
+    needs: [db, redis]
+    install: [yarn, install, --immutable]
+    start: [yarn, workspace, "@mastodon/streaming", start]
+    volumes: [node_modules]
+    egress: [registry.yarnpkg.com, registry.npmjs.org]
+    health:
+      http: /api/v1/streaming/health
+    env:
+      PORT: "4000"
+      DB_HOST: ${bay.db.host}
+      DB_PORT: ${bay.db.port}
+      DB_USER: postgres
+      DB_PASS: postgres
+      REDIS_URL: ${bay.redis.url}
+
+  # ---------------------------------------------------------------------------
+  # The two processes that broke the original schema.
+  #
+  # Neither has a port. Neither has a readiness command. Under the original
+  # "every service must declare http, tcp, or cmd" rule the only way to write
+  # these was to invent a probe that does not exist — a fake that would report
+  # healthy while the worker was dead, silently defeating the entire
+  # verification loop. Hence `log` (real readiness, from the ready line the
+  # process already prints) and `process` (honest liveness, and the validator
+  # warns about it).
+  # ---------------------------------------------------------------------------
+
+  # Procfile.dev line: `sidekiq: env PORT=3000 RAILS_ENV=development bundle exec sidekiq`
+  sidekiq:
+    image: ruby:3.4-bookworm
+    needs: [db, redis, db-setup]
+    install: [bundle, install]
+    start: [bundle, exec, sidekiq]
+    volumes: [vendor/bundle]
+    watch: ["app/workers/**", "app/lib/**"]
+    watch_action: restart
+    egress: [rubygems.org, index.rubygems.org]
+    health:
+      # Sidekiq announces itself on boot; matching that line is genuine
+      # readiness, not merely "the process has not exited yet".
+      log: "Starting processing, hit Ctrl-C to stop"
+      timeout: 120s
+    env: *rails_env
+
+  # Procfile.dev line: `vite: yarn dev`
+  # An asset build watcher. Produces files consumed by puma; serves nothing.
+  assets:
+    image: node:22-bookworm
+    install: [yarn, install, --immutable]
+    start: [yarn, dev]
+    volumes: [node_modules, public/packs, tmp/cache]
+    watch: ["app/javascript/**", "package.json"]
+    watch_action: restart
+    egress: [registry.yarnpkg.com, registry.npmjs.org]
+    health:
+      log: "ready in [0-9]+ ?ms"
+      timeout: 300s
+
+tasks:
+  # argv[0] is `bin/rspec`, outside the default allowlist. Permitted under R2
+  # with one-time approval showing the exact argv, keyed by its hash. The
+  # script is committed and reviewable in the repo; this is not a shell string
+  # the model composed. This is the escape hatch working as designed — no
+  # `raw:` block was needed.
+  unit:
+    run: [bin/rspec, --format, RspecJunitFormatter, --out, tmp/junit.xml]
+    needs: [db, redis]
+    in: web
+    timeout: 30m
+    report:
+      format: junit
+      path: tmp/junit.xml
+
+  system:
+    run: [bin/rspec, spec/system, --tag, js, --format, RspecJunitFormatter, --out, tmp/junit-system.xml]
+    needs: [web, db, redis, streaming, assets]
+    in: web
+    timeout: 45m
+    report:
+      format: junit
+      path: tmp/junit-system.xml
+
+  lint:
+    run: [bundle, exec, rubocop, --format, junit, --out, tmp/rubocop.xml]
+    needs: []
+    report:
+      format: junit
+      path: tmp/rubocop.xml
+
+  lint-js:
+    run: [yarn, lint:js]
+    needs: []
+
+externals:
+  smtp:
+    emulate: mailpit
+    real: never
+  s3:
+    emulate: minio
+    real: gated

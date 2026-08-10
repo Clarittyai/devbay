@@ -1,0 +1,6 @@
+{
+  "repo": "https://github.com/saleor/saleor",
+  "commit": "15575bd85a8e0b87bfa867bb8a01cb76bca913ad",
+  "clone": "git clone --depth 1 https://github.com/saleor/saleor.git",
+  "note": "devbay.yaml in this directory was hand-written against this exact commit for the M-1 spec gate."
+}

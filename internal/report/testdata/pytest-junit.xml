@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="1" tests="4" time="0.018" timestamp="2026-08-10T11:45:25.744606-05:00" hostname="shahars-mbp.lan"><testcase classname="test_sample" name="test_passes" time="0.000" /><testcase classname="test_sample" name="test_fails" time="0.000"><failure message="assert 42 == 7">def test_fails():
+        expected = 42
+&gt;       assert expected == 7
+E       assert 42 == 7
+
+test_sample.py:8: AssertionError</failure></testcase><testcase classname="test_sample" name="test_skipped" time="0.000"><skipped type="pytest.skip" message="not today">test_sample.py:10: not today</skipped></testcase><testcase classname="test_sample" name="test_errors" time="0.000"><failure message="ConnectionError: connection refused: dial tcp 127.0.0.1:5432">def test_errors():
+&gt;       raise ConnectionError("connection refused: dial tcp 127.0.0.1:5432")
+E       ConnectionError: connection refused: dial tcp 127.0.0.1:5432
+
+test_sample.py:15: ConnectionError</failure></testcase></testsuite></testsuites>

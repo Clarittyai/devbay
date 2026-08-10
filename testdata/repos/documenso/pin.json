@@ -1,0 +1,6 @@
+{
+  "repo": "https://github.com/documenso/documenso",
+  "commit": "962cffc9f546be68860be3489247f67255c83a66",
+  "clone": "git clone --depth 1 https://github.com/documenso/documenso.git",
+  "note": "devbay.yaml in this directory was hand-written against this exact commit for the M-1 spec gate."
+}
