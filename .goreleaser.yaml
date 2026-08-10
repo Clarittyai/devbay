@@ -1,0 +1,66 @@
+# goreleaser configuration.
+#
+# devbay ships as a single static binary: modernc.org/sqlite is pure Go, so
+# CGO stays off and cross-compilation is a matter of setting GOOS.
+version: 2
+
+project_name: devbay
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: devbay
+    main: ./cmd/devbay
+    binary: devbay
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .FullCommit }}
+      - -X main.date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: devbay
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - Merge pull request
+
+release:
+  # Drafted rather than published: a release is the one action that cannot be
+  # taken back, and the notes deserve a read before anyone downloads them.
+  draft: true
+  footer: |
+    **Verifying a download**
+
+        shasum -a 256 -c checksums.txt --ignore-missing
+
+    devbay needs a container runtime. Run `devbay doctor` after installing; it
+    reports what it found and what it thinks of it.
