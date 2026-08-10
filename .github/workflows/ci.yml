@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  # Cheap and fast, so it fails first and tells you something specific.
+  lint:
+    name: format and vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: make fmt-check
+      - run: make vet
+      - name: go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  # No containers. Runs on both platforms because the parts that differ between
+  # macOS and Linux -- path resolution, address planes, port probing -- are
+  # exactly the parts that have broken before.
+  unit:
+    name: unit (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: make build
+      - run: make test
+
+  # The full suite, with a real container runtime. Most of the bugs worth
+  # catching in this codebase live here: teardown completeness, health probing,
+  # port publication, per-netns egress.
+  #
+  # Linux only. GitHub's macOS runners have no nested virtualisation and so no
+  # Docker, which is why the macOS gate stays manual (see CONTRIBUTING.md).
+  integration:
+    name: integration + race
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: docker is available
+        run: docker version && docker info --format '{{.ServerVersion}}'
+      - name: full suite under the race detector
+        run: go test -race -timeout 40m ./...
+      # A leaked container, volume, or network is a product bug, not test
+      # noise: `devbay rm` reversing `devbay new` is a promise. The suite
+      # asserts this itself, and this is the backstop for anything that
+      # bypassed the harness.
+      - name: no orphaned docker resources
+        if: always()
+        run: |
+          left=$( (docker ps -aq --filter label=dev.devbay.managed
+                   docker volume  ls -q --filter label=dev.devbay.managed
+                   docker network ls -q --filter label=dev.devbay.managed) | wc -l )
+          if [ "$left" -ne 0 ]; then
+            echo "::error::the suite left $left devbay-managed resource(s) behind"
+            make orphans
+            exit 1
+          fi
