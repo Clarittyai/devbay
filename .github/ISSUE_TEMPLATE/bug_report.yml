@@ -1,0 +1,71 @@
+name: Bug report
+description: Something devbay did that it should not have
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things make a devbay bug report actionable: the output of
+        `devbay doctor`, and the manifest. Almost every report that stalls is
+        missing one of them.
+
+        **Do not paste secrets.** `devbay logs` is scrubbed, but a manifest you
+        copied by hand or a `.env` you pasted is not.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, what you got.
+      placeholder: |
+        $ devbay run api integration
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: devbay doctor
+      description: Paste the full output. It reports the runtime, the memory configuration, and the address planes, which is where a surprising number of these live.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: manifest
+    attributes:
+      label: devbay.yaml
+      description: The manifest, or the smallest part of it that reproduces this.
+      render: yaml
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: devbay version
+      description: Output of `devbay version`.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Container runtime
+      options:
+        - Docker Desktop
+        - OrbStack
+        - Colima
+        - Docker Engine (Linux)
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: teardown
+    attributes:
+      label: Did it leave anything behind?
+      description: Run `make orphans`, or check for containers labelled `dev.devbay.managed`. A leak after `devbay rm` is a high-severity bug and we want to know.
+      options:
+        - label: "`devbay rm` left containers, volumes, or networks behind"

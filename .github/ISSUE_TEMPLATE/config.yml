@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Clarittyai/devbay/security/advisories/new
+    about: Report privately. Please do not open a public issue — see SECURITY.md.
+  - name: A repository devbay could not detect
+    url: https://github.com/Clarittyai/devbay/issues/new?labels=detection&template=blank
+    about: Link the repo and paste `devbay init --stdout`. Detection gaps are tracked as ordinary issues.

@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the routine churn; anything that moves the Docker SDK or the
+      # Anthropic SDK gets read on its own.
+      minor-and-patch:
+        update-types: [minor, patch]
+        exclude-patterns:
+          - "github.com/moby/*"
+          - "github.com/anthropics/*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

@@ -1,0 +1,24 @@
+name: Feature request
+description: Something devbay should do and does not
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what stops you? Describe the situation rather than the feature — the fix is often not the one that comes to mind first.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: Optional. If it touches the manifest format, note which of R1–R7 it interacts with.
+    validations:
+      required: false
+  - type: markdown
+    attributes:
+      value: |
+        Some things are out of scope by design, and saying so early saves everyone time:
+        hosted or remote environments, team-shared bays, state syncing between machines,
+        telemetry, and any path that lets generated configuration write `egress:`.
