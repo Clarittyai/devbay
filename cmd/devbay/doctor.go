@@ -100,6 +100,8 @@ func cmdDoctor(ctx context.Context) error {
 		}
 		check(i.NCPU >= 4, fmt.Sprintf("VM CPUs %d", i.NCPU), "")
 
+		checkDisk(ctx, cli, check, note)
+
 		// The finding that most affects how devbay should be used on a Mac.
 		if isAppleVZ(i.OperatingSystem, i.KernelVersion, i.Name) {
 			note("memory reclamation on this runtime is limited",
@@ -120,6 +122,11 @@ func cmdDoctor(ctx context.Context) error {
 	if l, err := net.Listen("tcp", "127.0.0.1:80"); err == nil {
 		l.Close()
 		check(true, "port 80 is available", "bay hostnames will work without a port suffix")
+	} else if devbayHoldsPort80(ctx, cli) {
+		// devbay's own proxy is the single most likely thing to be holding
+		// :80, and reporting that as a conflict told the developer to stop the
+		// component that makes their bay URLs work.
+		check(true, "port 80 is held by devbay's own proxy", "bay hostnames work without a port suffix")
 	} else {
 		note("port 80 is in use",
 			"devbay will serve bay hostnames on :8080 instead, so URLs need the port. "+
@@ -142,7 +149,6 @@ func cmdDoctor(ctx context.Context) error {
 				"where a package lifecycle script runs code from a repository you have just cloned.")
 	}
 
-	fmt.Printf("\nproxy image %s\n", dim(proxy.Image))
 	return summarise(problems)
 }
 
@@ -163,4 +169,60 @@ func isAppleVZ(osName, kernel, name string) bool {
 		return false
 	}
 	return strings.Contains(s, "docker desktop") || strings.Contains(s, "linuxkit")
+}
+
+// devbayHoldsPort80 reports whether the thing occupying :80 is devbay's proxy.
+//
+// It is by far the most likely occupant on a machine that has run devbay
+// before, and calling that a conflict advised the developer to stop the one
+// component that makes bay hostnames work at all.
+func devbayHoldsPort80(ctx context.Context, cli *client.Client) bool {
+	list, err := cli.ContainerList(ctx, client.ContainerListOptions{
+		Filters: make(client.Filters).Add("name", proxy.ContainerName),
+	})
+	if err != nil {
+		return false
+	}
+	for _, c := range list.Items {
+		for _, p := range c.Ports {
+			if p.PublicPort == 80 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkDisk reports how much room the container runtime has left.
+//
+// Worth its own check because running out is not a clear failure: it surfaces
+// from inside whatever container happened to need space first, as something
+// like "initdb: could not create directory: No space left on device" buried in
+// a Postgres log. A developer reads that as a broken database rather than a
+// full disk, and images are the largest thing devbay creates.
+func checkDisk(ctx context.Context, cli *client.Client, check func(bool, string, string), note func(string, string)) {
+	du, err := cli.DiskUsage(ctx, client.DiskUsageOptions{})
+	if err != nil {
+		return // not worth a warning of its own; the daemon is clearly answering
+	}
+	images := du.Images.TotalSize
+	containers := du.Containers.TotalSize
+	volumes := du.Volumes.TotalSize
+	cache := du.BuildCache.TotalSize
+	total := images + containers + volumes + cache
+
+	const gb = 1 << 30
+	summary := fmt.Sprintf("images %.1f GiB, volumes %.1f GiB, build cache %.1f GiB",
+		float64(images)/gb, float64(volumes)/gb, float64(cache)/gb)
+
+	// No portable way to read the VM's free space through the API, so this
+	// reports what devbay can see and says what to do about it. A threshold
+	// rather than a hard failure: plenty of machines run happily at 20 GiB.
+	if total > 20*gb {
+		note(fmt.Sprintf("the container runtime is holding %.1f GiB", float64(total)/gb),
+			summary+". Running out shows up as an unrelated-looking error inside a container -- "+
+				"`docker system df` to look, `docker builder prune` and `devbay rm` on bays you are done with to reclaim.")
+		return
+	}
+	check(true, fmt.Sprintf("runtime storage %.1f GiB", float64(total)/gb), summary)
 }

@@ -124,8 +124,14 @@ func cmdInit(ctx context.Context, args []string) error {
 		os.Stdout.Write(data)
 	}
 
-	for _, e := range res.Evidence {
-		fmt.Fprintf(os.Stderr, "  %s %-14s %s\n", dim("from"), e.Source, dim(e.Detail))
+	// The generated file already carries its own provenance header, so
+	// printing the same list again under --stdout reads as a stutter. It is
+	// worth saying when the file is being written somewhere the developer is
+	// not looking.
+	if !*stdout {
+		for _, e := range res.Evidence {
+			fmt.Fprintf(os.Stderr, "  %s %-14s %s\n", dim("from"), e.Source, dim(e.Detail))
+		}
 	}
 
 	if report != nil && !report.OK() {
