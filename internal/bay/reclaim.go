@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"time"
@@ -119,4 +120,40 @@ func (m *Manager) ensureReclaimImage(ctx context.Context) error {
 		return fmt.Errorf("pulling %s: %w", reclaimImage, err)
 	}
 	return nil
+}
+
+// EnsureWritable gives a bay's worktree back to the developer if a container
+// has taken it.
+//
+// This is about the primary activity, not about cleanup. Containers write into
+// the bind-mounted worktree as whatever user they run as, which for most
+// images is root, and on Linux that is the filesystem's ownership -- so after
+// a bay boots, the developer can find their own source tree read-only. Editing
+// is the thing devbay exists to let you do in parallel; a bay you cannot edit
+// is not a working bay.
+//
+// Checked with a write rather than by inspecting modes, because the question is
+// exactly "can this process write here" and permissions, ownership, ACLs and
+// the platform all bear on the answer. Costs a stat and a create when nothing
+// is wrong, which is the common case and the one that must stay cheap.
+func (m *Manager) EnsureWritable(ctx context.Context, worktree string) {
+	if worktree == "" || writable(worktree) {
+		return
+	}
+	m.Log("bay: a container has taken ownership of %s; taking it back", worktree)
+	if err := m.reclaimOwnership(ctx, worktree); err != nil {
+		m.Log("bay: could not restore write access to %s: %v", worktree, err)
+	}
+}
+
+// writable reports whether this process can create a file in a directory.
+func writable(dir string) bool {
+	probe := filepath.Join(dir, ".devbay-write-probe")
+	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
+		return os.IsExist(err) // someone else's probe: the directory is writable
+	}
+	f.Close()
+	_ = os.Remove(probe)
+	return true
 }

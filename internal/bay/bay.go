@@ -482,6 +482,11 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Bay, error) 
 			_ = eng.Down(context.WithoutCancel(ctx))
 			return unwind(err)
 		}
+		// Booting runs containers over the worktree -- installs, builds,
+		// migrations -- and they run as root. The developer's next act is to
+		// edit the code, so the tree has to be theirs before `devbay new`
+		// returns rather than the first time they try to save a file.
+		m.EnsureWritable(ctx, b.Worktree)
 	}
 
 	if err := m.store.Save(ctx, record{
@@ -689,7 +694,12 @@ func (m *Manager) RunTask(ctx context.Context, name, task string) (*engine.TaskR
 	if !ok {
 		return nil, fmt.Errorf("bay: %q does not exist", name)
 	}
-	return b.Engine.RunTask(ctx, task)
+	res, err := b.Engine.RunTask(ctx, task)
+	// A task runs a container over the worktree, so it can take ownership of
+	// whatever it wrote. Checked after every run, because the next thing the
+	// developer does is edit the file the task just complained about.
+	m.EnsureWritable(ctx, b.Worktree)
+	return res, err
 }
 
 // Adopt registers an already-created bay, used when the daemon restarts and
