@@ -59,20 +59,45 @@ This matters because **`*.localhost` does not resolve outside browsers**. Verifi
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/Clarittyai/devbay/main/install.sh | sh
+```
+
+One static binary, no Go toolchain, no sudo if `~/.local/bin` is on your PATH.
+The script checks the download against the published checksums and tells you
+where it put things.
+
+<details>
+<summary>Other ways</summary>
+
+From source, if you have Go 1.26 or newer:
+
+```sh
 go install github.com/Clarittyai/devbay/cmd/devbay@latest
 ```
 
-Or download a binary from [releases](https://github.com/Clarittyai/devbay/releases)
-and verify it:
+By hand, from [releases](https://github.com/Clarittyai/devbay/releases) — pick
+the archive for your platform, then:
 
 ```sh
 shasum -a 256 -c checksums.txt --ignore-missing
+tar -xzf devbay_*_darwin_arm64.tar.gz
+install -m 0755 devbay ~/.local/bin/
 ```
 
-devbay needs Go 1.26+ to build and a container runtime to run — Docker Desktop,
-OrbStack, and Colima all work. Run `devbay doctor` first; it reports what it
-found and what it thinks of it, including the memory configuration that causes
-a whole class of "it got slow after a few bays" problems.
+Pin a version with `DEVBAY_VERSION=v0.1.0`, or choose the destination with
+`DEVBAY_INSTALL_DIR=/opt/bin`.
+
+</details>
+
+You also need a container runtime — Docker Desktop, OrbStack, or Colima. Then:
+
+```sh
+devbay doctor
+```
+
+It reports what it found and what it thinks of it, including the memory and
+disk settings behind most "it got slow after a few bays" reports. Nothing else
+needs configuring.
 
 ## Try it
 
