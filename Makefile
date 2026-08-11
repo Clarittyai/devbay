@@ -33,6 +33,13 @@ test: ## unit tests only -- no containers, seconds
 test-all: ## the full suite, including Docker integration tests
 	go test -timeout 20m $(PKG)
 
+.PHONY: acceptance
+acceptance: ## drive the real binary the way a developer does (see docs/ACCEPTANCE.md)
+	# -count=1 because this suite builds the binary itself, so the test binary
+	# does not depend on the packages under test and Go would happily serve a
+	# cached pass after a change that broke the product.
+	go test -tags acceptance -count=1 -timeout 30m -v ./internal/acceptance/
+
 .PHONY: race
 race: ## the full suite under the race detector
 	go test -race -timeout 30m $(PKG)

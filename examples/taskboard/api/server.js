@@ -52,6 +52,15 @@ http.createServer(async (req, res) => {
       }));
       return;
     }
+    if (url.pathname === '/leak') {
+      // Applications print their own configuration all the time -- a startup
+      // banner, a debug endpoint, an error from a client library quoting the
+      // credential it just used. devbay scrubs what it returns, and this is
+      // here so the acceptance suite can prove that against a real leak.
+      console.log('config dump:', JSON.stringify(process.env));
+      res.end(JSON.stringify({ dumped: true }));
+      return;
+    }
     if (url.pathname === '/tasks' && req.method === 'POST') {
       await redis('RPUSH', 'tasks', encodeTask(url.searchParams));
       res.statusCode = 201;

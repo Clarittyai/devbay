@@ -10,6 +10,10 @@ Status: working end to end. `devbay init` proposes a manifest, bays boot with th
 
 ---
 
+**What it does and does not do:** [docs/CAPABILITIES.md](docs/CAPABILITIES.md)
+— including the limits and the unfinished parts. **Whether it actually does
+it:** [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md), and `make acceptance` to check.
+
 ## The problem
 
 Coding agents got fast at producing code. The bottleneck moved to **verification**: an agent can write a change in three minutes and has no idea whether it works.

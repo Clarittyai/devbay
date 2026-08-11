@@ -77,6 +77,11 @@ jobs:
       # noise: `devbay rm` reversing `devbay new` is a promise. The suite
       # asserts this itself, and this is the backstop for anything that
       # bypassed the harness.
+      # The suite that answers "does devbay do the job" rather than "do the
+      # units pass". Separate step so a failure names that, not a package.
+      - name: acceptance
+        run: make acceptance
+
       - name: no orphaned docker resources
         if: always()
         run: |
