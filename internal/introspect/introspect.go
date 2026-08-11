@@ -508,6 +508,16 @@ func (d *detector) fromCompose(ctx context.Context) {
 				d.gap("service %q has an unresolvable image %q; set a concrete one", name, image)
 				continue
 			}
+			// A compose service carrying both `image:` and `build:` builds the
+			// image and tags it with that name -- the name is an output, not
+			// something to pull. Preferring the image left devbay asking a
+			// registry for a tag that only ever existed on the machine that
+			// built it, and the error is a pull denial that says nothing about
+			// the build sitting right beside it.
+			if svc.Build != nil {
+				image = ""
+			}
+
 			s := &manifest.Service{Image: image, Env: map[string]string{}}
 			if s.Image == "" {
 				// Transcribed rather than skipped. Most repositories describe

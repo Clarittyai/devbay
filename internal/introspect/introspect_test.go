@@ -1015,3 +1015,30 @@ services:
 		t.Errorf("the env file was dropped without a word: %v", res.Gaps)
 	}
 }
+
+// Compose builds a service that has both, and tags the result with the image
+// name. Pulling that name asks a registry for something that only ever existed
+// on the machine that built it.
+func TestBuildWinsOverAnImageTagItProduces(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"compose.yaml": `
+services:
+  etl:
+    image: etl-local
+    build:
+      context: etl
+    ports: ["8080:8080"]
+`,
+		"etl/Dockerfile": "FROM alpine:3.20\n",
+	})
+	res := detect(t, dir)
+	assertValid(t, res)
+
+	etl := res.Manifest.Services["etl"]
+	if etl.Build == nil {
+		t.Fatal("the build context was dropped in favour of a tag nothing publishes")
+	}
+	if etl.Image != "" {
+		t.Errorf("image = %q; devbay would try to pull the tag its own build produces", etl.Image)
+	}
+}
