@@ -1162,6 +1162,12 @@ var knownHealth = []struct {
 	{"minio", manifest.Health{HTTP: "/minio/health/live"}},
 	{"mailpit", manifest.Health{HTTP: "/readyz"}},
 	{"mailhog", manifest.Health{HTTP: "/"}},
+	// Logstash's pipeline inputs are whatever the config says, so the only
+	// port that reliably means "up" is its monitoring API.
+	{"logstash", manifest.Health{TCP: 9600}},
+	{"zookeeper", manifest.Health{TCP: 2181}},
+	{"kafka", manifest.Health{TCP: 9092}},
+	{"etcd", manifest.Health{TCP: 2379}},
 }
 
 // inferHealth fills in probes, and records where it could not.
