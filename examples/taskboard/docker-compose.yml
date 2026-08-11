@@ -1,0 +1,30 @@
+# An ordinary compose file. devbay reads this and writes devbay.yaml from it --
+# the point of the example is that you do not hand-author the manifest.
+services:
+  cache:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: taskboard
+
+  api:
+    build: ./api
+    ports: ["4000:4000"]
+    depends_on: [cache, db]
+    environment:
+      REDIS_URL: redis://cache:6379
+      DATABASE_URL: postgres://postgres:postgres@db:5432/taskboard
+
+  web:
+    build: ./web
+    ports: ["3000:3000"]
+    depends_on: [api]
+    environment:
+      # Called from the browser, so this has to become a browser address.
+      API_URL: http://localhost:4000

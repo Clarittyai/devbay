@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testcase name="a title is required" time="0.0014" classname="test"></testcase>
+	<testcase name="an empty list parses as empty" time="0.0009" classname="test"></testcase>
+	<testcase name="totals are computed" time="0.0021" classname="test" failure="test failed">
+		<failure type="testCodeFailure" message="Expected values to be strictly equal">
+AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+2 !== 3
+    at TestContext.&lt;anonymous&gt; (/workspace/api/server.test.js:14:10)
+		</failure>
+	</testcase>
+	<!-- tests 3 -->
+	<!-- pass 2 -->
+	<!-- fail 1 -->
+</testsuites>

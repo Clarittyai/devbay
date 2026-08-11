@@ -262,6 +262,12 @@ func cmdRun(ctx context.Context, args []string) error {
 			fmt.Printf("  %s\n", dim(loc))
 		}
 		fmt.Printf("  %s\n", f.Message)
+		// The assertion itself lives in the failure body, not the headline
+		// attribute -- "Expected values to be strictly equal" without the
+		// "2 !== 3" underneath it is not something anyone can act on.
+		if f.Output != "" && f.Output != f.Message {
+			fmt.Printf("%s\n", dim(indent(truncateLines(f.Output, 12), "    ")))
+		}
 	}
 
 	// Without structured results the raw output is all an agent or a human
@@ -605,3 +611,15 @@ func green(s string) string  { return wrap("32", s) }
 func yellow(s string) string { return wrap("33", s) }
 func bold(s string) string   { return wrap("1", s) }
 func dim(s string) string    { return wrap("2", s) }
+
+// truncateLines keeps the first n lines of a failure body.
+//
+// A stack trace can run to hundreds of frames, and the assertion is always at
+// the top; printing all of it buries the next failure.
+func truncateLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) <= n {
+		return strings.Join(lines, "\n")
+	}
+	return strings.Join(lines[:n], "\n") + "\n…"
+}

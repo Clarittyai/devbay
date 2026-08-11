@@ -242,14 +242,37 @@ func (d *detector) rewireEnv() {
 // rewireValue rewrites one address, and reports what it decided.
 func (d *detector) rewireValue(value string, byPort map[int][]string, self string) (out, target, plane string, ok bool) {
 	u, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+	if err != nil || u.Host == "" || u.Scheme == "" {
 		return "", "", "", false
 	}
 	host := u.Hostname()
 	port, _ := strconv.Atoi(u.Port())
 
+	// Only a browser distinguishes the two planes, and only over HTTP. A
+	// postgres:// or redis:// address is read by a client library, never
+	// opened in a tab, so it wants the container address whichever host was
+	// written -- and those are the most common inter-service URLs there are.
+	browserFacing := u.Scheme == "http" || u.Scheme == "https"
+
 	switch {
 	case host == "localhost" || host == "127.0.0.1" || host == "0.0.0.0" || host == "host.docker.internal":
+		if !browserFacing {
+			// A datastore addressed as localhost in compose is this stack's
+			// own datastore; ${bay.<svc>.url} resolves correctly from inside a
+			// container and from the host alike.
+			if port == 0 {
+				return "", "", "", false
+			}
+			owners := byPort[port]
+			if len(owners) != 1 {
+				return "", "", "", false
+			}
+			// No path: a datastore reference is the whole address. devbay
+			// builds ${bay.db.url} from the service's own credentials and
+			// database name, so appending compose's path produced
+			// postgres://…/taskboard/taskboard.
+			return "${bay." + owners[0] + ".url}", owners[0], "container", true
+		}
 		// Reached from the developer's machine, so it is the browser origin.
 		// Without a port there is nothing to match against, and guessing which
 		// service someone meant would be worse than leaving it alone.
@@ -268,8 +291,28 @@ func (d *detector) rewireValue(value string, byPort map[int][]string, self strin
 
 	default:
 		// A service name: one container calling another.
-		if _, isService := d.m.Services[host]; !isService || host == self {
+		target, isService := d.m.Services[host]
+		if !isService || host == self {
 			return "", "", "", false
+		}
+		// A datastore in a compose file usually publishes no port, so the
+		// service devbay transcribed has none either -- and ${bay.db.url}
+		// cannot resolve without one. The URL is the missing information: it
+		// names the port that service listens on. Taking it from there turns
+		// a manifest that could not validate into one that works, which is the
+		// difference between the reference being an improvement and being a
+		// confidently wrong file.
+		if target.Port == 0 {
+			if port == 0 {
+				return "", "", "", false
+			}
+			target.Port = port
+			d.note(SourceConvention, "",
+				fmt.Sprintf("service %q listens on %d, read from the address %q used to reach it",
+					host, port, self))
+		}
+		if !browserFacing {
+			return "${bay." + host + ".url}", host, "container", true
 		}
 		return replaceHost(u, "${bay."+host+".url}"), host, "container", true
 	}

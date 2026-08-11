@@ -684,3 +684,51 @@ services:
 		t.Errorf("the ambiguity was not reported to the developer; gaps were %v", res.Gaps)
 	}
 }
+
+// A datastore URL is read by a client library, never opened in a browser, so
+// it wants the container address whichever host compose wrote. These are also
+// the most common inter-service URLs there are -- skipping them left the two
+// that matter most in a stock compose file pointing at a fixed host.
+func TestDatastoreURLsAreRewiredToTheContainerAddress(t *testing.T) {
+	dir := fixture(t, map[string]string{"docker-compose.yml": `
+services:
+  db:
+    image: postgres:16-alpine
+    ports: ["5432:5432"]
+  cache:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  api:
+    image: node:22-alpine
+    ports: ["4000:4000"]
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/app
+      REDIS_URL: redis://cache:6379
+      LOCAL_DB: postgres://postgres@localhost:5432/app
+      DOCS: https://example.com/api
+`})
+	res, err := Detect(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := res.Manifest.Services["api"].Env
+
+	// Both the service-name and the localhost form resolve to the container
+	// address: ${bay.<svc>.url} is correct from inside a container and from
+	// the host, and a browser was never going to open either of them.
+	// No path appended: devbay builds the DSN from the service's own
+	// credentials and database name, so keeping compose's path produced
+	// postgres://…/app/app.
+	if got := env["DATABASE_URL"]; got != "${bay.db.url}" {
+		t.Errorf("DATABASE_URL = %q, want the container address of db", got)
+	}
+	if got := env["REDIS_URL"]; got != "${bay.cache.url}" {
+		t.Errorf("REDIS_URL = %q, want the container address of cache", got)
+	}
+	if got := env["LOCAL_DB"]; got != "${bay.db.url}" {
+		t.Errorf("LOCAL_DB = %q, want the container address of db", got)
+	}
+	if got := env["DOCS"]; got != "https://example.com/api" {
+		t.Errorf("a third-party URL was rewritten to %q", got)
+	}
+}

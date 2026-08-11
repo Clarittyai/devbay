@@ -269,3 +269,46 @@ func TestGarbageIsRejectedNotGuessed(t *testing.T) {
 		t.Error("non-JSON should be rejected")
 	}
 }
+
+// Node's own test runner puts test cases directly under <testsuites>, with no
+// <testsuite> in between. Parsed as an empty document, a failing run reported
+// zero tests -- which reads as "nothing ran" rather than "your tests failed",
+// and is the one wrong answer a test reporter must never give: an agent seeing
+// no failures concludes its change worked.
+//
+// Captured from `node --test --test-reporter=junit` rather than hand-written,
+// for the same reason as the other fixtures here.
+func TestNodesJUnitDialect(t *testing.T) {
+	f, err := os.Open("testdata/node-junit.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	res, err := ParseJUnit(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Passed != 2 || res.Failed != 1 {
+		t.Errorf("passed=%d failed=%d, want 2 and 1", res.Passed, res.Failed)
+	}
+	if len(res.Failures) != 1 {
+		t.Fatalf("got %d failures, want 1", len(res.Failures))
+	}
+	f0 := res.Failures[0]
+	if f0.Name != "totals are computed" {
+		t.Errorf("failure name = %q", f0.Name)
+	}
+	// The headline is the message attribute; the assertion itself is in the
+	// element body, and that is the part anyone acts on.
+	if !strings.Contains(f0.Message, "strictly equal") {
+		t.Errorf("headline = %q", f0.Message)
+	}
+	if !strings.Contains(f0.Output, "2 !== 3") {
+		t.Errorf("the assertion detail was lost: %q", f0.Output)
+	}
+	// The location is inside the text, as it is for pytest.
+	if f0.File == "" || f0.Line == 0 {
+		t.Errorf("no location parsed from the failure text: file=%q line=%d", f0.File, f0.Line)
+	}
+}

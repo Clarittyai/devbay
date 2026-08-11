@@ -85,6 +85,15 @@ func (e *Engine) RunTask(ctx context.Context, taskName string) (*TaskResult, err
 	if t.Report != nil && t.Report.Path != "" {
 		reportPath = filepath.Join(e.worktree, t.Report.Path)
 		_ = os.Remove(reportPath)
+		// The directory is created for the framework. Almost none of them will
+		// make it themselves -- Node's test runner, pytest and go test all
+		// fail with a bare ENOENT on the report path -- and the manifest has
+		// already said where the file goes, so requiring the developer to
+		// create it by hand is asking them to repeat themselves and then
+		// debug a message that never mentions the directory.
+		if dir := filepath.Dir(reportPath); dir != "" {
+			_ = os.MkdirAll(dir, 0o755)
+		}
 	}
 
 	env, err := e.res.ResolveEnv(t.Env, PlaneContainer)
@@ -177,8 +186,15 @@ func (e *Engine) exec(ctx context.Context, service string, argv manifest.Argv, e
 
 func (e *Engine) execIn(ctx context.Context, id string, argv manifest.Argv, env map[string]string) (int, string, error) {
 	created, err := e.cli.ExecCreate(ctx, id, client.ExecCreateOptions{
-		Cmd:          argv,
-		Env:          envList(env),
+		Cmd: argv,
+		Env: envList(env),
+		// A task is a command about the repository -- `node --test api/`,
+		// `pytest tests/` -- so it runs where the repository is. Without this
+		// it inherited the image's own working directory, which for an image
+		// built from this repo is wherever the build put the code, and every
+		// repo-relative task failed with "could not find api/" naming a
+		// directory it had never been pointed at.
+		WorkingDir:   e.taskWorkdir(),
 		AttachStdout: true,
 		AttachStderr: true,
 	})
@@ -212,6 +228,9 @@ func (e *Engine) execIn(ctx context.Context, id string, argv manifest.Argv, env 
 	}
 }
 
+// taskWorkdir is where a task's command runs: the repository.
+func (e *Engine) taskWorkdir() string { return WorkspaceDir }
+
 // execThrowaway runs a command in a fresh container built like the service.
 func (e *Engine) execThrowaway(ctx context.Context, service string, argv manifest.Argv, env map[string]string) (int, string, error) {
 	s, ok := e.m.Services[service]
@@ -226,6 +245,14 @@ func (e *Engine) execThrowaway(ctx context.Context, service string, argv manifes
 	// port the real service owns.
 	tmp := *s
 	tmp.Port, tmp.Ports = 0, nil
+	// A task is a command about the repository -- `node --test api/`, `pytest
+	// tests/` -- so it runs where the repository is. A service runs wherever
+	// its image says, which for an image built from this repo is wherever the
+	// build put the code; inheriting that made every repo-relative task fail
+	// with "could not find api/" from a directory the task never mentioned.
+	if tmp.Workdir == "" {
+		tmp.Workdir = e.taskWorkdir()
+	}
 	tmp.Env = mergeEnv(s.Env, nil)
 
 	// The bay network has to exist even when no service is running, because

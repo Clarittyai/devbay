@@ -101,6 +101,17 @@ needs configuring.
 
 ## Try it
 
+There is a complete example in [`examples/taskboard`](examples/taskboard) — a
+browser client, an API, a cache and a database, with no package installs, that
+boots in seconds:
+
+```sh
+cd examples/taskboard && git init && git add -A && git commit -m taskboard
+devbay init && devbay new my-change
+```
+
+Against your own repository:
+
 ```
 git clone https://github.com/Clarittyai/devbay && cd devbay
 make build

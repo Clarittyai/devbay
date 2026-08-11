@@ -442,3 +442,41 @@ func brokenWorktree(t *testing.T) string {
 	}
 	return dir
 }
+
+// Every container is told which bay it is in, so an application can name its
+// own bay in a title, a log line, or a banner. Five identical-looking tabs is
+// the problem per-bay origins solve for the browser; this is what lets the
+// application help.
+func TestContainersKnowWhichBayTheyAreIn(t *testing.T) {
+	e, m := testEngine(t, "identity")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	plan, err := BootPlan(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Up(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+
+	ins, err := e.cli.ContainerInspect(ctx, e.containerName("web"), client.ContainerInspectOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, kv := range ins.Container.Config.Env {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			got[k] = v
+		}
+	}
+	for k, want := range map[string]string{
+		"DEVBAY_BAY":     "identity",
+		"DEVBAY_PROJECT": "devbaytest",
+		"DEVBAY_SERVICE": "web",
+	} {
+		if got[k] != want {
+			t.Errorf("%s = %q, want %q", k, got[k], want)
+		}
+	}
+}

@@ -443,10 +443,19 @@ func (e *Engine) create(ctx context.Context, name string, s *manifest.Service, c
 	if err != nil {
 		return "", err
 	}
-	envList := make([]string, 0, len(env))
+	envList := make([]string, 0, len(env)+3)
 	for k, v := range env {
 		envList = append(envList, k+"="+v)
 	}
+	// Every container is told which bay it is in. An application that can name
+	// its own bay can put it in a page title, a log line, or a banner -- which
+	// is the difference between five identical-looking tabs and five you can
+	// tell apart. Set after the manifest's own env so a manifest can override
+	// them, and prefixed so they cannot collide with an application's.
+	envList = append(envList,
+		"DEVBAY_BAY="+e.bay,
+		"DEVBAY_PROJECT="+e.m.Project,
+		"DEVBAY_SERVICE="+name)
 	sort.Strings(envList)
 
 	// A pulled image is a runtime -- node:22, python:3.12 -- and the code it

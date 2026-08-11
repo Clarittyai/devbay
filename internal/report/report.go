@@ -85,6 +85,12 @@ func Parse(format manifest.ReportFormat, r io.Reader) (*Result, error) {
 type junitSuites struct {
 	XMLName xml.Name     `xml:"testsuites"`
 	Suites  []junitSuite `xml:"testsuite"`
+	// Node's test runner puts test cases directly under <testsuites> with no
+	// <testsuite> in between. Without this they are parsed as an empty
+	// document and a failing run is reported as zero tests -- which reads as
+	// "nothing ran" rather than "your tests failed", and is the one wrong
+	// answer a test reporter must never give.
+	Cases []junitCase `xml:"testcase"`
 }
 
 type junitSuite struct {
@@ -130,6 +136,11 @@ func ParseJUnit(r io.Reader) (*Result, error) {
 			return nil, fmt.Errorf("report: not JUnit XML: %w", err)
 		}
 		suites.Suites = []junitSuite{single}
+	}
+
+	// Cases at the top level belong to an implicit suite.
+	if len(suites.Cases) > 0 {
+		suites.Suites = append(suites.Suites, junitSuite{Cases: suites.Cases})
 	}
 
 	res := &Result{}
