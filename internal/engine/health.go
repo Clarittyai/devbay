@@ -208,7 +208,15 @@ func probeHTTP(ctx context.Context, url string) error {
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+
+	// Anything short of a server error means the application is up and
+	// routing. A 404 in particular is the commonest answer to a health path
+	// devbay chose rather than read -- an API that serves /users and nothing
+	// at / is working perfectly -- and failing the boot over it punishes the
+	// developer for devbay's guess. 5xx is different: the server is there and
+	// says it cannot serve, which is what "not ready yet" looks like from a
+	// framework still booting behind its own proxy.
+	if resp.StatusCode < 500 {
 		return nil
 	}
 	return fmt.Errorf("%s returned %s", url, resp.Status)

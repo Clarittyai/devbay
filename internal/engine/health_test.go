@@ -90,20 +90,34 @@ func TestHealthTimeoutReportsTheProbeNotTheDeadline(t *testing.T) {
 	// A server that answers, wrongly, forever: the shape of a health path
 	// pointed at the wrong endpoint.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
+		http.Error(w, "starting up", http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
 
-	err := probeHTTP(context.Background(), srv.URL+"/")
-	if err == nil {
-		t.Fatal("a 404 was treated as healthy")
+	// A server error is the service saying it cannot serve.
+	if err := probeHTTP(context.Background(), srv.URL+"/"); err == nil {
+		t.Fatal("a 503 was treated as healthy")
+	} else {
+		if !strings.Contains(err.Error(), "503") {
+			t.Errorf("the probe error does not say what came back: %v", err)
+		}
+		wrapped := fmt.Errorf("did not become healthy within %s: %w", 15*time.Second, err)
+		if !strings.Contains(wrapped.Error(), "503") || !strings.Contains(wrapped.Error(), "15s") {
+			t.Errorf("the timeout message lost either the answer or the wait: %v", wrapped)
+		}
 	}
-	if !strings.Contains(err.Error(), "404") {
-		t.Errorf("the probe error does not say what came back: %v", err)
-	}
-	// And the wrapper the wait loop uses keeps it.
-	wrapped := fmt.Errorf("did not become healthy within %s: %w", 15*time.Second, err)
-	if !strings.Contains(wrapped.Error(), "404") || !strings.Contains(wrapped.Error(), "15s") {
-		t.Errorf("the timeout message lost either the answer or the wait: %v", wrapped)
+}
+
+// The commonest answer to a health path devbay chose rather than read: an API
+// that serves /users and nothing at /. It is up.
+func TestProbeHTTPAcceptsAnythingShortOfAServerError(t *testing.T) {
+	for _, code := range []int{200, 204, 301, 302, 401, 403, 404} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+		}))
+		if err := probeHTTP(context.Background(), srv.URL+"/"); err != nil {
+			t.Errorf("status %d was treated as unhealthy: %v", code, err)
+		}
+		srv.Close()
 	}
 }
