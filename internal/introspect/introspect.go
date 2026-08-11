@@ -885,23 +885,26 @@ func (d *detector) fromPackageJSON() {
 		}
 	}
 
-	if _, has := pkg.Scripts["dev"]; has && d.m.Services["web"] == nil {
-		s := &manifest.Service{
-			Start:   manifest.Argv{pm, "run", "dev"},
+	// `dev` first, because a development server with reload is what a bay is
+	// for -- but `start` counts too. Plenty of applications ship only `start`,
+	// and reading a package.json that plainly says how to run the thing and
+	// then reporting that no services were detected is the kind of answer that
+	// makes a tool not worth running.
+	for _, script := range []string{"dev", "start"} {
+		if _, has := pkg.Scripts[script]; !has || d.m.Services["web"] != nil {
+			continue
+		}
+		d.m.Services["web"] = &manifest.Service{
+			Start:   manifest.Argv{pm, "run", script},
 			Port:    port,
 			Install: manifest.Argv{pm, installVerb(pm)},
 			Volumes: []string{"node_modules"},
 		}
-		d.m.Services["web"] = s
-		detail := fmt.Sprintf("`%s run dev`", pm)
+		detail := fmt.Sprintf("`%s run %s`", pm, script)
 		if framework != "" {
 			detail += fmt.Sprintf("; port %d inferred from %s", port, framework)
 		}
 		d.note(SourcePackageJSON, path, detail)
-		d.gap("service \"web\" has no image; set one providing Node")
-		if port == 0 {
-			d.gap("service \"web\" has no port; devbay cannot tell which port the dev server listens on")
-		}
 	}
 
 	// Test and lint scripts become tasks. A task with needs: [] boots nothing,
@@ -991,6 +994,7 @@ func (d *detector) openDjangoHosts() {
 		return
 	}
 	var name string
+	var sawSettings bool
 	_ = filepath.WalkDir(d.dir, func(p string, de fs.DirEntry, err error) error {
 		if err != nil || name != "" {
 			return nil
@@ -1005,6 +1009,7 @@ func (d *detector) openDjangoHosts() {
 		if de.Name() != "settings.py" {
 			return nil
 		}
+		sawSettings = true
 		b, err := os.ReadFile(p)
 		if err != nil {
 			return nil
@@ -1015,8 +1020,13 @@ func (d *detector) openDjangoHosts() {
 		return nil
 	})
 	if name == "" {
-		d.gap("if this project restricts ALLOWED_HOSTS, add ${bay.web.public_host} to it or the bay's " +
-			"own hostname will answer 400 in a browser")
+		// Only worth saying to a project that has the setting. Said to
+		// everyone, it is noise, and a gap list nobody reads is the same as no
+		// gap list.
+		if sawSettings {
+			d.gap("this project's ALLOWED_HOSTS is not read from the environment, so devbay cannot add " +
+				"the bay's hostname to it; add ${bay.web.public_host} yourself or a browser will get 400")
+		}
 		return
 	}
 	if web.Env == nil {
