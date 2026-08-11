@@ -302,7 +302,8 @@ func startEchoServer(t *testing.T, cli *client.Client, ctx context.Context, netN
 	// it to the exact host it was served from — which is the behaviour under
 	// test.
 	const script = `
-import http.server, urllib.parse
+import http.server, urllib.parse, os
+SERVED_BY = os.environ.get("BAY", "?")
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
@@ -314,6 +315,12 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"ok")
+            return
+        if u.path == "/whoserved":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(SERVED_BY.encode())
             return
         cookie = self.headers.get("Cookie") or ""
         user = "anonymous"
@@ -333,6 +340,7 @@ http.server.HTTPServer(("0.0.0.0", 80), H).serve_forever()
 		Config: &container.Config{
 			Image:  appImage,
 			Cmd:    []string{"python3", "-c", script},
+			Env:    []string{"BAY=" + label},
 			Labels: map[string]string{"dev.devbay.test": "1"},
 		},
 		NetworkingConfig: &network.NetworkingConfig{
@@ -474,4 +482,68 @@ func liveHosts(t *testing.T, ctx context.Context, adminPort int) map[string]bool
 		}
 	}
 	return out
+}
+
+// Each bay's hostname must reach that bay's containers and no other's.
+//
+// Every bay aliases its containers by service name, and the proxy is joined to
+// every bay's network, so an upstream of "app:80" resolves to whichever bay's
+// container Docker picks. One bay's hostname then serves another bay's
+// containers -- found by voting once in each of two bays of the same
+// application and finding both votes in one database.
+//
+// The cookie test could not catch this: both bays ran identical servers, so a
+// misrouted request produced an identical answer. Here each server says which
+// bay it is.
+func TestABayHostnameReachesOnlyThatBaysContainers(t *testing.T) {
+	cli := dockerOrSkip(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	p := New(cli, func(f string, a ...any) { t.Logf(f, a...) })
+	t.Cleanup(func() {
+		c, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_ = p.Stop(c)
+	})
+	if err := p.Ensure(ctx, 18083, 12022); err != nil {
+		t.Fatalf("starting proxy: %v", err)
+	}
+
+	for _, bay := range []string{"one", "two"} {
+		netName := "devbaytest-route-" + bay
+		startEchoServer(t, cli, ctx, netName, bay)
+		if err := p.Attach(ctx, netName); err != nil {
+			t.Fatalf("attaching %s: %v", netName, err)
+		}
+		// Named the way the engine names containers: unique on the machine,
+		// rather than the per-bay alias that collides.
+		if err := p.SetRoutes(ctx, "acme", bay, []Route{{
+			Host:     bay + ".acme.localhost",
+			Upstream: "devbaytest-proxy-app-" + bay + ":80",
+		}}); err != nil {
+			t.Fatalf("routing %s: %v", bay, err)
+		}
+	}
+	for _, bay := range []string{"one", "two"} {
+		waitRoute(t, ctx, p.HTTPPort, bay+".acme.localhost")
+	}
+
+	for _, bay := range []string{"one", "two"} {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+			fmt.Sprintf("http://127.0.0.1:%d/whoserved", p.HTTPPort), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = bay + ".acme.localhost"
+		resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", bay, err)
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		resp.Body.Close()
+		if got := strings.TrimSpace(string(body)); got != bay {
+			t.Errorf("%s.acme.localhost was served by bay %q; traffic crossed between bays", bay, got)
+		}
+	}
 }

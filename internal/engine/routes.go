@@ -35,8 +35,17 @@ func (e *Engine) publishRoutes(ctx context.Context) error {
 			continue
 		}
 		routes = append(routes, proxy.Route{
-			Host:     e.res.Hostname(name),
-			Upstream: name + ":" + strconv.Itoa(s.Port),
+			Host: e.res.Hostname(name),
+			// The container's full name, not the service alias. Every bay
+			// aliases its containers by service name, and the proxy is joined
+			// to every bay's network, so "vote:80" resolves to whichever bay's
+			// vote container Docker feels like -- and one bay's hostname
+			// silently served another bay's containers. Two bays, two votes,
+			// both landing in the same database.
+			//
+			// That is the isolation devbay exists to provide, so the upstream
+			// has to name something that exists exactly once on the machine.
+			Upstream: e.containerName(name) + ":" + strconv.Itoa(s.Port),
 		})
 
 		// Secondary ports get their own subdomain, so a mail catcher's web UI
@@ -45,7 +54,7 @@ func (e *Engine) publishRoutes(ctx context.Context) error {
 		for pn, cp := range s.Ports {
 			routes = append(routes, proxy.Route{
 				Host:     e.res.NamedHostname(name, pn),
-				Upstream: name + ":" + strconv.Itoa(cp),
+				Upstream: e.containerName(name) + ":" + strconv.Itoa(cp),
 			})
 		}
 
@@ -57,7 +66,7 @@ func (e *Engine) publishRoutes(ctx context.Context) error {
 		if e.focused && name == primary {
 			routes = append(routes, proxy.Route{
 				Host:     e.m.Project + "." + e.res.TLD,
-				Upstream: name + ":" + strconv.Itoa(s.Port),
+				Upstream: e.containerName(name) + ":" + strconv.Itoa(s.Port),
 			})
 		}
 	}
