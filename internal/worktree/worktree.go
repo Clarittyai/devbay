@@ -162,7 +162,14 @@ func (m *Manager) Create(opts CreateOptions) (*Worktree, error) {
 
 	path := filepath.Join(m.Root, opts.Name)
 	if _, err := os.Stat(path); err == nil {
-		return nil, fmt.Errorf("worktree: %s already exists but is not a registered worktree; remove it or pick another name", path)
+		// Usually the remains of a run that was interrupted between creating
+		// the directory and registering it, so the fix is a teardown rather
+		// than a different name -- and saying which command does it saves the
+		// developer working out that a directory under ~/.devbay is devbay's
+		// to remove.
+		return nil, fmt.Errorf("worktree: %s already exists but git does not know about it, "+
+			"which is what an interrupted `devbay new` leaves behind. "+
+			"`devbay rm %s --force` clears it, or pick another name", path, filepath.Base(path))
 	}
 
 	// Read and validate the include list before touching git. Everything that

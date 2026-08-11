@@ -1205,6 +1205,17 @@ func (d *detector) inferHealth() {
 				h := k.health
 				s.Health = &h
 				d.note(SourceConvention, "", fmt.Sprintf("health probe for %q from the %s image family", name, k.prefix))
+				// A probe naming a port the service does not declare cannot
+				// run: devbay publishes declared ports and probes the mapping,
+				// so the probe would ask about a port that was never
+				// forwarded. The port comes from the same evidence the probe
+				// did -- it is that image family's own -- and a compose file
+				// routinely leaves it out because nothing outside the stack
+				// needs to reach the database.
+				if h.TCP != 0 && s.Port == 0 {
+					s.Port = h.TCP
+					d.note(SourceConvention, "", fmt.Sprintf("port %d for %q from the same image family", h.TCP, name))
+				}
 				break
 			}
 		}
