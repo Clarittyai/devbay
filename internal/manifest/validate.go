@@ -473,7 +473,15 @@ func validateArgvFrom(r *Result, pat spec.Rules, at string, argv Argv, provided 
 	// configuring the image, and there is no program name here for a human to
 	// approve -- the image is the thing being trusted, and it is named
 	// elsewhere in this service.
+	//
+	// Reported rather than passed over in silence, because the image decides
+	// what those arguments mean: on an image whose entrypoint is a shell, they
+	// are a shell's arguments. That is the image author's choice and not
+	// something this rule can see, so the manifest says so out loud.
 	if strings.HasPrefix(argv[0], "-") {
+		r.add(Warn, "R2", at,
+			fmt.Sprintf("%q is an argument, so this configures the image's own entrypoint rather than naming a program; "+
+				"what it does is up to that image", argv[0]))
 		return
 	}
 
