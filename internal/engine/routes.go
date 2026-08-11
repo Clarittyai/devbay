@@ -178,29 +178,46 @@ func (e *Engine) checkOrigin(ctx context.Context) {
 	}
 
 	host := e.res.Hostname(name)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("http://127.0.0.1:%d%s", e.prox.HTTPPort, s.Health.HTTP), nil)
-	if err != nil {
-		return
-	}
-	req.Host = host
-
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
-	resp, err := client.Do(req)
+	get := func(url, hostHeader string) (int, bool) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return 0, false
+		}
+		if hostHeader != "" {
+			req.Host = hostHeader
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode, true
+	}
+
+	viaHost, ok := get(fmt.Sprintf("http://127.0.0.1:%d%s", e.prox.HTTPPort, s.Health.HTTP), host)
+	if !ok || (viaHost != http.StatusBadRequest && viaHost != http.StatusForbidden) {
+		return
+	}
+
+	// The comparison is the whole signal. A service that answers 403 to
+	// everything is not rejecting the hostname -- it is asking for
+	// credentials -- and telling its author to edit ALLOWED_HOSTS would send
+	// them somewhere there is nothing wrong.
+	ep, err := e.res.Endpoint(name, PlaneHost)
 	if err != nil {
 		return
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusForbidden {
+	direct, ok := get(fmt.Sprintf("http://%s:%d%s", ep.Host, ep.Port, s.Health.HTTP), "")
+	if !ok || direct == viaHost {
 		return
 	}
-	e.Log("  note: %s answers on its port but returns %d for the hostname %s.", name, resp.StatusCode, host)
+	e.Log("  note: %s answers %d on its own port but %d for the hostname %s.", name, direct, viaHost, host)
 	e.Log("        Web frameworks keep an allowlist of hostnames they will serve -- Django's")
 	e.Log("        ALLOWED_HOSTS, Rails' config.hosts, Vite's server.allowedHosts. Add %s,", host)
 	e.Log("        or the whole `.localhost` suffix, so the bay's own origin works in a browser.")
