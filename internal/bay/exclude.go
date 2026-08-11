@@ -33,6 +33,7 @@ func excludeGenerated(worktree string, m *manifest.Manifest) error {
 	if len(paths) == 0 {
 		return nil
 	}
+	prepareReportDirs(worktree, m)
 
 	dir, err := gitInfoDir(worktree)
 	if err != nil {
@@ -132,4 +133,33 @@ func gitInfoDir(worktree string) (string, error) {
 		return "", fmt.Errorf("locating the git directory for %s: %w", worktree, err)
 	}
 	return filepath.Join(strings.TrimSpace(string(out)), "info"), nil
+}
+
+// prepareReportDirs creates the directories a task's report will be written
+// into, while the worktree is still owned by this process.
+//
+// It has to happen now rather than at task time. Containers write into the
+// bind-mounted worktree as root, and on Linux a container's uid is the
+// filesystem's uid -- so once a bay has run, the developer's own process
+// cannot create a directory inside its worktree. Creating it at task time
+// failed with "permission denied" on every bay that had booted, and before
+// that failure was surfaced it appeared as the test framework's own ENOENT on
+// the report path, which names a file rather than a directory.
+//
+// World-writable because the container writes the report and does not run as
+// this user.
+func prepareReportDirs(worktree string, m *manifest.Manifest) {
+	for _, t := range m.Tasks {
+		if t == nil || t.Report == nil || t.Report.Path == "" {
+			continue
+		}
+		rel := filepath.Dir(filepath.FromSlash(strings.TrimPrefix(t.Report.Path, "./")))
+		if rel == "." || rel == string(filepath.Separator) || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		dir := filepath.Join(worktree, rel)
+		if err := os.MkdirAll(dir, 0o777); err == nil {
+			_ = os.Chmod(dir, 0o777)
+		}
+	}
 }
