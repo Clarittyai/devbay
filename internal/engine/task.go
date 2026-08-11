@@ -95,7 +95,18 @@ func (e *Engine) RunTask(ctx context.Context, taskName string) (*TaskResult, err
 		// create it by hand is asking them to repeat themselves and then
 		// debug a message that never mentions the directory.
 		if dir := filepath.Dir(reportPath); dir != "" {
-			_ = os.MkdirAll(dir, 0o755)
+			if err := os.MkdirAll(dir, 0o777); err != nil {
+				return nil, fmt.Errorf("engine: preparing the report directory %s: %w", dir, err)
+			}
+			// 0o777 rather than 0o755, and forced, because the container writes
+			// the report and it does not run as this user. On Linux a
+			// container's uid is the filesystem's uid, so a directory this
+			// process owns is one a root-less container cannot write into --
+			// and the failure surfaces as the framework's own ENOENT on the
+			// report path, naming a file rather than a permission.
+			if err := os.Chmod(dir, 0o777); err != nil {
+				e.Log("  could not open the report directory for the container: %v", err)
+			}
 		}
 	}
 
