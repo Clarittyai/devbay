@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
@@ -131,13 +132,55 @@ func (e *Engine) Cool(ctx context.Context) error {
 		}
 	}
 	timeout := 10
-	return e.each(ctx, "stopping", func(id string) error {
+	if err := e.each(ctx, "stopping", func(id string) error {
 		_, err := e.cli.ContainerStop(ctx, id, client.ContainerStopOptions{Timeout: &timeout})
 		if err != nil && isNotModified(err) {
 			return nil
 		}
 		return err
-	})
+	}); err != nil {
+		return err
+	}
+	return e.settle(ctx, StateCold)
+}
+
+// settle waits until the daemon's own view of the bay matches want.
+//
+// ContainerStop returns once the process is gone, but the container list is
+// not updated atomically with it: on a loaded machine a State() read taken
+// immediately afterwards can still report the container as running. A `devbay
+// cool` that returns while `devbay ls` still says warm is a tool contradicting
+// itself, and a scheduler that acts on the stale answer evicts the wrong bay.
+//
+// Bounded, and it reports which services are still up rather than hanging: a
+// container that genuinely refuses to stop is a real failure and must look
+// like one.
+func (e *Engine) settle(ctx context.Context, want State) error {
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		st, err := e.State(ctx)
+		if err != nil {
+			return err
+		}
+		if st == want {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			list, _ := e.longRunning(ctx)
+			var stuck []string
+			for _, c := range list {
+				if c.State != "exited" && c.State != "created" {
+					stuck = append(stuck, fmt.Sprintf("%s (%s)", c.Labels[LabelService], c.State))
+				}
+			}
+			return fmt.Errorf("the bay is %s rather than %s: %s", st, want, strings.Join(stuck, ", "))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // Warm restarts a cold bay and waits for it to be healthy again.

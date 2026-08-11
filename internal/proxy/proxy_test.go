@@ -15,6 +15,8 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
+
+	"github.com/Clarittyai/devbay/internal/testutil"
 )
 
 func dockerOrSkip(t *testing.T) *client.Client {
@@ -271,6 +273,9 @@ func waitRoute(t *testing.T, ctx context.Context, port int, host string) {
 }
 
 // startEchoServer runs a tiny session server on its own network, aliased "app".
+// appImage runs the session server the isolation test talks to.
+const appImage = "python:3.12-alpine"
+
 func startEchoServer(t *testing.T, cli *client.Client, ctx context.Context, netName, label string) string {
 	t.Helper()
 
@@ -280,6 +285,17 @@ func startEchoServer(t *testing.T, cli *client.Client, ctx context.Context, netN
 	}); err != nil && !strings.Contains(err.Error(), "exists") {
 		t.Fatalf("creating network %s: %v", netName, err)
 	}
+	// Confirmed rather than assumed. A create that reported "already exists"
+	// against a network that has since been removed leaves this pointing at
+	// nothing, and the symptom surfaces later and elsewhere -- as a container
+	// that will not start, naming a network the test believes it just made.
+	if _, err := cli.NetworkInspect(ctx, netName, client.NetworkInspectOptions{}); err != nil {
+		t.Fatalf("network %s does not exist after creating it: %v", netName, err)
+	}
+
+	// Pulled explicitly: this test creates containers through the Docker API
+	// rather than through the engine, so nothing else fetches the image.
+	testutil.PullImage(ctx, t, cli, appImage)
 
 	// A session server in one line of Python: /login sets a cookie, /whoami
 	// reads it back. The cookie has no Domain attribute, so the browser scopes
@@ -315,7 +331,7 @@ http.server.HTTPServer(("0.0.0.0", 80), H).serve_forever()
 	res, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Name: "devbaytest-proxy-app-" + label,
 		Config: &container.Config{
-			Image:  "python:3.12-alpine",
+			Image:  appImage,
 			Cmd:    []string{"python3", "-c", script},
 			Labels: map[string]string{"dev.devbay.test": "1"},
 		},
