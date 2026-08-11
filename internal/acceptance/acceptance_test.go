@@ -32,6 +32,14 @@ type env struct {
 	t    *testing.T
 	bin  string // the devbay binary under test
 	repo string // a checkout of examples/taskboard
+	// home isolates the suite's state -- bays, ports, approvals, audit log --
+	// from the developer's own. Without it the suite both depends on and
+	// modifies whatever they have already done on this machine, which makes a
+	// pass mean nothing and a failure impossible to reproduce.
+	home string
+	// dockerConfig points at the developer's real docker CLI configuration,
+	// which is not state devbay owns and must not be isolated with the rest.
+	dockerConfig string
 }
 
 func setup(t *testing.T) *env {
@@ -54,7 +62,13 @@ func setup(t *testing.T) *env {
 	if out, err := exec.Command("cp", "-r", filepath.Join(root, "examples", "taskboard"), repo).CombinedOutput(); err != nil {
 		t.Fatalf("copying the example: %v\n%s", err, out)
 	}
-	e := &env{t: t, bin: bin, repo: repo}
+	e := &env{t: t, bin: bin, repo: repo, home: t.TempDir()}
+	// The docker CLI keeps its plugins under $HOME/.docker, and buildx is one
+	// of them -- so isolating HOME without this takes BuildKit away and every
+	// `build:` service fails for a reason that has nothing to do with devbay.
+	if real, err := os.UserHomeDir(); err == nil {
+		e.dockerConfig = filepath.Join(real, ".docker")
+	}
 	e.git("init", "-q")
 	e.git("add", "-A")
 	e.git("-c", "user.email=a@t", "-c", "user.name=a", "commit", "-qm", "taskboard")
@@ -82,12 +96,25 @@ func (e *env) run(args ...string) string {
 	return out
 }
 
+// command prepares an invocation of devbay.
+//
+// Every call goes through here so no test can accidentally run against the
+// developer's own state: one that did would create bays the suite's cleanup
+// cannot see, and leave them on the machine for good.
+func (e *env) command(args ...string) *exec.Cmd {
+	cmd := exec.Command(e.bin, args...)
+	cmd.Dir = e.repo
+	cmd.Env = append(os.Environ(),
+		"DEVBAY_NO_MODEL=1",
+		"HOME="+e.home,
+		"DOCKER_CONFIG="+e.dockerConfig)
+	return cmd
+}
+
 // try invokes devbay and hands back whatever happened.
 func (e *env) try(args ...string) (string, error) {
 	e.t.Helper()
-	cmd := exec.Command(e.bin, args...)
-	cmd.Dir = e.repo
-	cmd.Env = append(os.Environ(), "DEVBAY_NO_MODEL=1")
+	cmd := e.command(args...)
 	var buf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	err := cmd.Run()
@@ -101,7 +128,7 @@ func (e *env) mcp(tool string, args map[string]any) map[string]any {
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 		"params": map[string]any{"name": tool, "arguments": args},
 	})
-	cmd := exec.Command(e.bin, "mcp")
+	cmd := e.command("mcp")
 	cmd.Dir = e.repo
 	cmd.Stdin = bytes.NewReader(append(req, '\n'))
 	out, err := cmd.Output()
@@ -393,7 +420,7 @@ func TestDevbayDoesTheJob(t *testing.T) {
 			t.Errorf("M: teardown left %d %s behind", n, kind)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".devbay", "worktrees", "app")); err == nil {
+	if _, err := os.Stat(filepath.Join(e.home, ".devbay", "worktrees", "app")); err == nil {
 		t.Error("M: teardown left the project's worktree directory behind")
 	}
 }
@@ -407,9 +434,8 @@ func TestUndeclaredEgressIsBlocked(t *testing.T) {
 	e.git("add", "-A")
 	e.git("-c", "user.email=a@t", "-c", "user.name=a", "commit", "-qm", "devbay.yaml")
 
-	cmd := exec.Command(e.bin, "new", "locked")
-	cmd.Dir = e.repo
-	cmd.Env = append(os.Environ(), "DEVBAY_EGRESS=1", "DEVBAY_NO_MODEL=1",
+	cmd := e.command("new", "locked")
+	cmd.Env = append(cmd.Env, "DEVBAY_EGRESS=1",
 		"DEVBAY_SECRET_ACCEPTANCE_CANARY="+canary)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("O: a bay with egress enforcement did not boot\n%s", out)
@@ -546,9 +572,7 @@ tasks:
 	}
 
 	// An agent cannot approve on the developer's behalf.
-	cmd := exec.Command(e.bin, "approve")
-	cmd.Dir = e.repo
-	cmd.Env = append(os.Environ(), "DEVBAY_NO_MODEL=1")
+	cmd := e.command("approve")
 	cmd.Stdin = strings.NewReader("y\ny\ny\n") // an agent answering for the human
 	agentOut, _ := cmd.CombinedOutput()
 	if !strings.Contains(string(agentOut), "human") {
@@ -565,5 +589,96 @@ tasks:
 	t.Cleanup(func() { _, _ = e.try("rm", "gated", "--force") })
 	if code, _ := e.get("gated.gated.localhost", "/"); code != 200 {
 		t.Errorf("Q: an approved command did not serve; got %d", code)
+	}
+}
+
+// TestSeedingIsPaidForOnce is scenario R.
+//
+// The claim is that the second bay of a project does not re-run the migration
+// suite. It is the difference between opening a bay to look at a branch and
+// deciding not to bother, so it is checked by observation -- the seeding step
+// must not run, and the data must be there anyway.
+func TestSeedingIsPaidForOnce(t *testing.T) {
+	e := setup(t)
+
+	if err := os.MkdirAll(filepath.Join(e.repo, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.repo, "db", "001_init.sql"),
+		[]byte("CREATE TABLE seeded (id serial primary key);\n"+
+			"INSERT INTO seeded SELECT generate_series(1,1000);\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.repo, "devbay.yaml"), []byte(`version: 1
+project: seeded
+services:
+  db:
+    image: postgres:16
+    port: 5432
+    fork: image
+    seed: {after: [migrate], sources: [db]}
+    # tcp, not pg_isready: the official entrypoint runs initdb against a
+    # temporary server listening on the unix socket only, so a socket probe
+    # reports ready while every TCP client still gets connection refused.
+    health: {tcp: 5432}
+    env:
+      POSTGRES_PASSWORD: devbay
+      POSTGRES_DB: app
+  migrate:
+    kind: oneshot
+    image: postgres:16
+    needs: [db]
+    run: ["sh", "-c", "psql \"$DB\" -v ON_ERROR_STOP=1 -f /workspace/db/001_init.sql"]
+    env:
+      DB: postgres://postgres:devbay@db:5432/app
+  web:
+    image: nginx:alpine
+    port: 80
+    primary: true
+    needs: [migrate]
+    health: {http: /}
+tasks:
+  unit: {run: ["true"], needs: []}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.git("add", "-A")
+	e.git("-c", "user.email=a@t", "-c", "user.name=a", "commit", "-qm", "seeded")
+
+	// `sh -c` is exactly what R2 gates, so this repository needs a decision
+	// before any of it runs -- which is itself worth exercising here.
+	e.run("approve", "--yes")
+
+	first := e.run("new", "sfirst")
+	t.Cleanup(func() { _, _ = e.try("rm", "sfirst", "--force") })
+	if !strings.Contains(first, "captured") {
+		t.Fatalf("R: the first bay seeded but captured nothing to reuse:\n%s", first)
+	}
+
+	second := e.run("new", "ssecond")
+	t.Cleanup(func() { _, _ = e.try("rm", "ssecond", "--force") })
+	if !strings.Contains(second, "skipped") {
+		t.Errorf("R: the second bay re-ran the seeding steps:\n%s", second)
+	}
+
+	// The saving is worthless if the data is not there.
+	for _, bay := range []string{"sfirst", "ssecond"} {
+		out, err := exec.Command("docker", "exec", "devbay-seeded-"+bay+"-db",
+			"psql", "-U", "postgres", "-d", "app", "-tAc", "select count(*) from seeded").Output()
+		if err != nil || strings.TrimSpace(string(out)) != "1000" {
+			t.Errorf("R: bay %s has %q rows of seeded data, want 1000 (%v)", bay, strings.TrimSpace(string(out)), err)
+		}
+	}
+
+	// And the bays are still independent: a shared template must not become a
+	// shared database.
+	if out, err := exec.Command("docker", "exec", "devbay-seeded-ssecond-db",
+		"psql", "-U", "postgres", "-d", "app", "-c", "insert into seeded (id) values (99999)").CombinedOutput(); err != nil {
+		t.Fatalf("writing to the second bay: %v\n%s", err, out)
+	}
+	out, _ := exec.Command("docker", "exec", "devbay-seeded-sfirst-db",
+		"psql", "-U", "postgres", "-d", "app", "-tAc", "select count(*) from seeded").Output()
+	if strings.TrimSpace(string(out)) != "1000" {
+		t.Errorf("R: a write in one bay changed another bay's data (%q)", strings.TrimSpace(string(out)))
 	}
 }

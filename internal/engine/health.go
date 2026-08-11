@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"time"
 
@@ -161,13 +162,43 @@ func probeHTTP(ctx context.Context, url string) error {
 	return fmt.Errorf("%s returned %s", url, resp.Status)
 }
 
+// probeTCP asks whether something is actually listening behind a published
+// port -- which is not the same question as whether the port accepts.
+//
+// Docker's userland proxy binds the host port the moment the container is
+// created and accepts connections whether or not the process inside has
+// started listening; when nothing is there, it accepts and immediately closes.
+// A probe that dialled and hung up therefore reported a database as ready
+// while it was still running initdb, and everything downstream believed it: a
+// migration ran against a server that was not accepting TCP, and the failure
+// surfaced as the application's error rather than as an unfinished boot.
+//
+// So the connection is held open briefly and read from. A server waiting for a
+// request keeps the connection open and the read times out -- postgres, redis
+// and mysql all behave this way -- and one that greets its clients sends a
+// banner. Only an immediate EOF means the port was answered by a proxy with
+// nothing behind it.
 func probeTCP(ctx context.Context, port int) error {
 	d := net.Dialer{Timeout: 3 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return err
 	}
-	return conn.Close()
+	defer conn.Close()
+
+	if err := conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		return nil // cannot tell; treat the successful connection as the answer
+	}
+	var b [1]byte
+	switch _, err := conn.Read(b[:]); {
+	case err == nil:
+		return nil // it said something first, so it is up
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		return nil // waiting for us, which is what a ready server does
+	default:
+		return fmt.Errorf("port %d accepted the connection and closed it at once, "+
+			"which is what Docker's port forwarder does while the service is still starting", port)
+	}
 }
 
 // probeExec runs a command inside the container; exit zero is healthy.

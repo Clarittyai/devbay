@@ -97,8 +97,7 @@ func (e *env) editAndWatch(bay string) {
 	e.t.Helper()
 	wt := e.worktree(bay)
 
-	cmd := exec.Command(e.bin, "watch", bay)
-	cmd.Dir = e.repo
+	cmd := e.command("watch", bay)
 	if err := cmd.Start(); err != nil {
 		e.t.Fatalf("H: devbay watch would not start: %v", err)
 	}
@@ -189,11 +188,8 @@ const canary = "sk_live_ACCEPTANCE_CANARY_9f2ad41c"
 // a developer's secret manager would supply it.
 func (e *env) runWithSecret(args ...string) string {
 	e.t.Helper()
-	cmd := exec.Command(e.bin, args...)
-	cmd.Dir = e.repo
-	cmd.Env = append(os.Environ(),
-		"DEVBAY_NO_MODEL=1",
-		"DEVBAY_SECRET_ACCEPTANCE_CANARY="+canary)
+	cmd := e.command(args...)
+	cmd.Env = append(cmd.Env, "DEVBAY_SECRET_ACCEPTANCE_CANARY="+canary)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		e.t.Fatalf("devbay %s: %v\n%s", strings.Join(args, " "), err, out)

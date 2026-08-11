@@ -40,6 +40,12 @@ sessions. This is the difference that is hard to work around.
 target, through BuildKit, honouring `.dockerignore`. The context is confined to
 the worktree.
 
+**Seeds a project's datastore once, not once per bay.** A service with
+`fork: image` and `seed:` has its state captured into a per-project template
+the first time it is built, and every later bay restores it and skips the
+migration steps entirely. The template is keyed by the contents of the declared
+sources, so changing a migration rebuilds it and a rebase does not.
+
 **Materialises only what a task needs.** `needs: []` boots nothing, so a unit
 run is milliseconds. `needs: [api]` starts the API and its dependencies and
 nothing else.
@@ -120,6 +126,21 @@ Go, Node, Python and Safari (before macOS 26) do not. So devbay gives code the
 `127.0.0.1:<port>` address and reserves hostnames for browsers. `devbay url`
 prints both and says which is which.
 
+**A published port accepts before the service listens.** Docker's userland
+proxy binds the host port when the container is created, so a plain connect
+probe reports a database ready while it is still running initdb. devbay's
+`tcp:` probe holds the connection briefly and reads: an immediate hangup is the
+forwarder, not a server. It is worth knowing because a `cmd:` probe has the
+same trap in reverse -- `pg_isready` answers over the unix socket while
+postgres is still refusing every TCP client.
+
+**Seeded templates are crash-consistent.** The capture pauses the datastore
+rather than stopping it, so the restored copy is what a power cut would leave
+and the engine recovers it on start -- visible as one "automatic recovery in
+progress" line in a new bay's log. Stopping the datastore instead would give a
+cleaner copy at the cost of restarting a service the developer is already
+using, which is a worse trade for a cache.
+
 **A partly-applied egress policy fails closed.** The chain's default policy is
 set to DROP before any rule is written, so a sidecar that dies mid-script
 leaves the service with no outbound network rather than an unrestricted one.
@@ -151,7 +172,4 @@ Stated plainly rather than left to be discovered.
 - **Services cannot be shared between bays.** `scope: shared` is refused rather
   than ignored, and `fork:` — which only means anything for a shared service —
   is reported as inert. Every service runs once per bay.
-- **`seed:` does not bake an image yet.** Seed steps run as ordinary oneshots
-  through `needs`, so the data is correct; what is missing is the per-project
-  image that would make each bay's datastore start instantly.
 - **AWS STS minting is not implemented.** GitHub App tokens are.

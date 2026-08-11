@@ -39,6 +39,7 @@ something a developer could see for themselves.
 | O | Undeclared egress is blocked | a service with no `egress:` reaches the internet, or cannot reach its own bay's peers |
 | P | Emulators remove the need for credentials | a bay declaring `externals:` cannot exercise the dependency without a real key |
 | Q | An unapproved command does not run | a command outside the allowlist executes without a human's approval, or a non-human caller can grant it |
+| R | Seeding is paid for once | the second bay of a project re-runs the migration suite, restores incomplete data, or shares a database with the first |
 
 Scenario J deliberately does not assert that application data survives. That is
 the application's business: this example's cache declares no volume, so losing

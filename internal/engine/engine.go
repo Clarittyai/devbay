@@ -68,6 +68,11 @@ type Engine struct {
 	// which case Docker picks ephemeral ports.
 	assigned map[string]int
 
+	// seeds records what seeding resolved to for each service in this bay,
+	// filled in as containers are created and read when the bay is up.
+	seeds  map[string]*seedState
+	seedMu sync.Mutex
+
 	// Log receives progress lines. Never nil after New.
 	Log func(format string, args ...any)
 }
@@ -132,6 +137,7 @@ func New(ctx context.Context, opts Options) (*Engine, error) {
 		scrubber: opts.Scrubber,
 		egress:   opts.Egress,
 		assigned: map[string]int{},
+		seeds:    map[string]*seedState{},
 		Log:      logf,
 	}
 	if e.scrubber == nil {
@@ -280,6 +286,11 @@ func (e *Engine) Up(ctx context.Context, plan *Plan) error {
 		}
 	}
 
+	// Captured before the routes, while nothing outside the bay can reach it:
+	// the snapshot pauses the datastore, and pausing something a browser is
+	// talking to reads as a hang.
+	e.captureSeeds(ctx)
+
 	// Routes go up last. Publishing them earlier would give a supervisor a
 	// hostname that answers 502 while the bay is still coming up, which reads
 	// as a broken app rather than an unfinished boot.
@@ -299,6 +310,14 @@ func (e *Engine) bring(ctx context.Context, step Step) error {
 	if done, err := e.alreadyUp(ctx, step); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	} else if done {
+		return nil
+	}
+
+	// The saving is here, not in the copy: a restored datastore already
+	// contains what these steps would produce, so running them would repeat
+	// the migration suite against a database that has had it.
+	if e.seedRestored(name) {
+		e.Log("  %s: skipped; its result is already in the restored state", name)
 		return nil
 	}
 
@@ -523,7 +542,24 @@ func (e *Engine) create(ctx context.Context, name string, s *manifest.Service, c
 		}
 	}
 
+	// A seeded datastore keeps its state in a named volume so it can be
+	// captured and restored. Without this the state lives in the anonymous
+	// volume the image declares, which is invisible, unnameable and discarded
+	// with the container.
+	seed, err := e.prepareSeed(ctx, name, s)
+	if err != nil {
+		return "", err
+	}
+	if seed != nil {
+		e.seedMu.Lock()
+		e.seeds[name] = seed
+		e.seedMu.Unlock()
+	}
+
 	mounts := make([]mount.Mount, 0, len(s.Volumes))
+	if seed != nil {
+		mounts = append(mounts, seed.Mounts...)
+	}
 	for _, rel := range s.Volumes {
 		vol := e.volumeName(name, rel)
 		if err := e.ensureVolume(ctx, name, vol); err != nil {
@@ -882,6 +918,14 @@ func (e *Engine) Down(ctx context.Context) error {
 	// volume would -- and the developer has no way to tell which of the images
 	// on their machine came from a bay that no longer exists.
 	if err := e.removeBuiltImages(ctx); err != nil {
+		errs = append(errs, err)
+	}
+
+	// And the seeded template, once no bay of this project is left to use it.
+	// HC6 counts a database fork surviving teardown as a bug of the same
+	// severity as a crash, and a template volume full of seeded data is
+	// exactly that -- however useful it was five minutes earlier.
+	if err := e.removeSeedTemplates(ctx); err != nil {
 		errs = append(errs, err)
 	}
 
