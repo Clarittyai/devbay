@@ -59,12 +59,32 @@ func (e *Engine) waitHealthy(ctx context.Context, name, id string, s *manifest.S
 	defer ticker.Stop()
 
 	var last error
+	// expired composes the message a developer actually needs: what was
+	// probed, and what it kept answering. Written once and used from every
+	// exit, because the deadline can fire anywhere in this loop -- and when it
+	// fired during a Docker call, this used to return that call's own
+	// "context deadline exceeded" against a docker.sock URL, which names the
+	// tool's plumbing instead of the service that never came up.
+	expired := func() error {
+		if last != nil {
+			return fmt.Errorf("did not become healthy within %s: %w", timeout, last)
+		}
+		return fmt.Errorf("did not become healthy within %s", timeout)
+	}
+
 	for {
+		if ctx.Err() != nil {
+			return expired()
+		}
+
 		// A container that has exited will never become healthy, so waiting
 		// out the full timeout only delays a failure the daemon already knows
 		// about.
 		alive, code, err := e.running(ctx, id)
 		if err != nil {
+			if ctx.Err() != nil {
+				return expired()
+			}
 			return err
 		}
 		if !alive {
@@ -73,17 +93,17 @@ func (e *Engine) waitHealthy(ctx context.Context, name, id string, s *manifest.S
 
 		if err := e.probeOnce(ctx, name, id, s); err == nil {
 			return nil
-		} else {
+		} else if ctx.Err() == nil {
+			// A probe cut short by the deadline describes the cancellation
+			// rather than the service, so the previous round's answer is the
+			// one worth keeping.
 			last = err
 		}
 
 		select {
 		case <-ticker.C:
 		case <-ctx.Done():
-			if last != nil {
-				return fmt.Errorf("did not become healthy within %s: %w", timeout, last)
-			}
-			return fmt.Errorf("did not become healthy within %s", timeout)
+			return expired()
 		}
 	}
 }

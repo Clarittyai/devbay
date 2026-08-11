@@ -2,7 +2,11 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -76,5 +80,30 @@ func TestProbeTCPAcceptsAServerThatGreetsFirst(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	if err := probeTCP(context.Background(), port); err != nil {
 		t.Errorf("a server that sent a banner was reported unhealthy: %v", err)
+	}
+}
+
+// The most common failure in the whole tool is a service that never becomes
+// healthy, so the message it produces has to name the service's answer rather
+// than devbay's plumbing.
+func TestHealthTimeoutReportsTheProbeNotTheDeadline(t *testing.T) {
+	// A server that answers, wrongly, forever: the shape of a health path
+	// pointed at the wrong endpoint.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	err := probeHTTP(context.Background(), srv.URL+"/")
+	if err == nil {
+		t.Fatal("a 404 was treated as healthy")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("the probe error does not say what came back: %v", err)
+	}
+	// And the wrapper the wait loop uses keeps it.
+	wrapped := fmt.Errorf("did not become healthy within %s: %w", 15*time.Second, err)
+	if !strings.Contains(wrapped.Error(), "404") || !strings.Contains(wrapped.Error(), "15s") {
+		t.Errorf("the timeout message lost either the answer or the wait: %v", wrapped)
 	}
 }
