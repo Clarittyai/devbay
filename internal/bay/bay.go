@@ -23,6 +23,7 @@ import (
 
 	"github.com/moby/moby/client"
 
+	"github.com/Clarittyai/devbay/internal/approve"
 	"github.com/Clarittyai/devbay/internal/broker"
 	"github.com/Clarittyai/devbay/internal/egress"
 	"github.com/Clarittyai/devbay/internal/engine"
@@ -84,6 +85,7 @@ type Manager struct {
 	broker  *broker.Broker
 	egress  *egress.Enforcer
 	store   *store
+	appr    *approve.Store
 
 	mu   sync.Mutex
 	bays map[string]*Bay
@@ -153,6 +155,13 @@ func Open(ctx context.Context, opts Options) (*Manager, error) {
 		return nil, err
 	}
 
+	appr, err := approve.Open(opts.StatePath)
+	if err != nil {
+		alloc.Close()
+		st.Close()
+		return nil, err
+	}
+
 	m := &Manager{
 		RepoRoot: wt.RepoRoot,
 		cli:      cli,
@@ -161,6 +170,7 @@ func Open(ctx context.Context, opts Options) (*Manager, error) {
 		scrub:    sc,
 		secrets:  NewSecrets(sc),
 		store:    st,
+		appr:     appr,
 		bays:     map[string]*Bay{},
 		Log:      logf,
 	}
@@ -358,6 +368,9 @@ func (m *Manager) Close() error {
 	if m.store != nil {
 		errs = append(errs, m.store.Close())
 	}
+	if m.appr != nil {
+		errs = append(errs, m.appr.Close())
+	}
 	if m.alloc != nil {
 		errs = append(errs, m.alloc.Close())
 	}
@@ -430,8 +443,12 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Bay, error) 
 	if err != nil {
 		return unwind(err)
 	}
-	if r := manifest.Validate(mf); !r.OK() {
-		return unwind(fmt.Errorf("bay: %s is not valid: %w", mf.Path, r.Err()))
+	res := manifest.Validate(mf)
+	if !res.OK() {
+		return unwind(fmt.Errorf("bay: %s is not valid: %w", mf.Path, res.Err()))
+	}
+	if err := m.RequireApprovals(ctx, mf, res); err != nil {
+		return unwind(err)
 	}
 
 	// A bay is a fresh checkout, so it sees the manifest as committed -- not

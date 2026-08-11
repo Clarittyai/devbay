@@ -38,6 +38,7 @@ something a developer could see for themselves.
 | N | Secrets do not leak | a planted credential appears in logs or in any MCP response |
 | O | Undeclared egress is blocked | a service with no `egress:` reaches the internet, or cannot reach its own bay's peers |
 | P | Emulators remove the need for credentials | a bay declaring `externals:` cannot exercise the dependency without a real key |
+| Q | An unapproved command does not run | a command outside the allowlist executes without a human's approval, or a non-human caller can grant it |
 
 Scenario J deliberately does not assert that application data survives. That is
 the application's business: this example's cache declares no volume, so losing

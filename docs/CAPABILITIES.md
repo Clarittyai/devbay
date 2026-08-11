@@ -65,6 +65,13 @@ services from a small catalogue — mailpit for SMTP, stripe-mock, minio for S3 
 each with its own hostname, health probe and teardown, so a bay can exercise
 mail or object storage with no credentials at all.
 
+**Refuses to run a command a human has not agreed to.** A repository may
+declare `bin/dev` or `./scripts/setup.sh` -- committed, reviewable scripts that
+no allowlist can anticipate -- and devbay will not execute one until a person
+has read the exact argv and approved it. The approval is keyed by the project
+and the whole argv array, so arguments nobody saw are a different command, and
+it is remembered rather than asked again. A non-human caller cannot grant it.
+
 **Confines each service's network to what it declares** (`DEVBAY_EGRESS=1`),
 applied inside the container's own namespace, never the host's.
 
@@ -113,6 +120,11 @@ Go, Node, Python and Safari (before macOS 26) do not. So devbay gives code the
 `127.0.0.1:<port>` address and reserves hostnames for browsers. `devbay url`
 prints both and says which is which.
 
+**A partly-applied egress policy fails closed.** The chain's default policy is
+set to DROP before any rule is written, so a sidecar that dies mid-script
+leaves the service with no outbound network rather than an unrestricted one.
+The opposite ordering is the natural one to write and is silently wrong.
+
 **Freezing does not free memory.** `docker pause` stops scheduling, not
 allocation — measured at 30.7 MiB running, 30.0 MiB frozen. Only `devbay cool`
 returns memory. On Docker Desktop with Apple's Virtualization.framework, even
@@ -142,6 +154,4 @@ Stated plainly rather than left to be discovered.
 - **`seed:` does not bake an image yet.** Seed steps run as ordinary oneshots
   through `needs`, so the data is correct; what is missing is the per-project
   image that would make each bay's datastore start instantly.
-- **Approvals are reported, not stored.** An argv outside the allowlist is
-  flagged on every validate rather than remembered once.
 - **AWS STS minting is not implemented.** GitHub App tokens are.

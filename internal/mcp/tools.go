@@ -165,6 +165,13 @@ func (s *Server) createBay(ctx context.Context, raw json.RawMessage) (any, error
 		From:   args.FromBranch,
 		Boot:   boot,
 	})
+	if bay.AwaitingApproval(err) {
+		// Said in the second person, because the only useful thing the agent
+		// can do with this is relay it. An error phrased at the agent invites
+		// it to work around the gate, which is the one outcome the gate exists
+		// to prevent.
+		return nil, fmt.Errorf("%w\nTell the developer: only they can approve this, and devbay will not run it until they do", err)
+	}
 	if err != nil {
 		return nil, err
 	}

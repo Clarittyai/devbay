@@ -51,6 +51,11 @@ const (
 	StageValidate Stage = "validate"
 	StageBoot     Stage = "boot"
 	StagePatch    Stage = "patch"
+	// StageApproval means the candidate is well-formed but runs a command no
+	// human has agreed to. Distinct from the others because it is the one
+	// failure a patcher must not try to fix: rewriting the command to get past
+	// the gate is precisely what the gate is there to stop.
+	StageApproval Stage = "approval"
 )
 
 // Failure describes why an attempt did not work, in the terms a patcher needs.
@@ -160,6 +165,10 @@ type Loop struct {
 // part. Returning an error here made callers discard exactly that.
 const NoPatcher = "no patcher is configured, so the failure was not repaired"
 
+// AwaitingApproval marks a result that stopped for a human decision. The
+// manifest may be perfectly good; it simply has not been agreed to.
+const AwaitingApproval = "a command in this manifest needs a human's approval before it can run"
+
 // Run drives the loop over an initial proposal.
 func (l *Loop) Run(ctx context.Context, initial []byte) (*Result, error) {
 	if l.Boot == nil {
@@ -203,6 +212,14 @@ func (l *Loop) Run(ctx context.Context, initial []byte) (*Result, error) {
 		}
 		logf("  attempt %d failed: %s", n, failure.Error())
 
+		if failure.Stage == StageApproval {
+			// Not a defect in the manifest, so there is nothing to repair and
+			// nobody but the developer can move it forward. Handing this to a
+			// patcher would ask a model to find a command that gets past a
+			// gate built to stop model-chosen commands.
+			res.Note = AwaitingApproval
+			return res, nil
+		}
 		if n == max {
 			break
 		}

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Clarittyai/devbay/internal/approve"
 	"github.com/Clarittyai/devbay/internal/bay"
 	"github.com/Clarittyai/devbay/internal/engine"
 	"github.com/Clarittyai/devbay/internal/manifest"
@@ -34,6 +35,7 @@ const usage = `devbay — parallel, isolated local environments for coding agent
 
   devbay init [--verify] [--force]         generate a devbay.yaml for this repo
   devbay validate [path ...]               check a manifest against R1-R7
+  devbay approve [--list] [--revoke k]     agree to a command outside the allowlist
   devbay schema                            print the JSON Schema
   devbay doctor                            diagnose the environment
   devbay version                           build and toolchain versions
@@ -57,7 +59,9 @@ func main() {
 	case "init":
 		err = cmdInit(ctx, args)
 	case "validate":
-		os.Exit(validate(args))
+		os.Exit(validate(ctx, args))
+	case "approve":
+		err = cmdApprove(ctx, args)
 	case "schema":
 		os.Stdout.Write(spec.Schema)
 	case "new":
@@ -513,10 +517,21 @@ func printURLs(info bay.Info) {
 	}
 }
 
-func validate(paths []string) int {
+func validate(ctx context.Context, paths []string) int {
 	if len(paths) == 0 {
 		paths = []string{"devbay.yaml"}
 	}
+	// Opened lazily and best-effort: validate must keep working with no Docker
+	// and no state directory, because it is the one command a developer runs
+	// while their machine is still wrong.
+	var granted func(*manifest.Manifest, manifest.Diagnostic) bool
+	if st, err := approve.Open(""); err == nil {
+		defer st.Close()
+		granted = func(mf *manifest.Manifest, d manifest.Diagnostic) bool {
+			return st.Granted(ctx, mf.Project, d.Argv)
+		}
+	}
+
 	var failed, approvals int
 	for _, p := range paths {
 		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
@@ -537,6 +552,10 @@ func validate(paths []string) int {
 			fmt.Printf("  %s %s: %s\n", red("error"), bold(d.Location()), d.Msg)
 		}
 		for _, d := range r.Approvals() {
+			if granted != nil && granted(m, d) {
+				fmt.Printf("  %s %s: %s\n", green("approved"), dim(d.Location()), dim(strings.Join(d.Argv, " ")))
+				continue
+			}
 			approvals++
 			fmt.Printf("  %s %s: %s\n", yellow("approve"), bold(d.Location()), d.Msg)
 			fmt.Printf("          %s\n", dim(strings.Join(d.Argv, " ")))
@@ -553,7 +572,11 @@ func validate(paths []string) int {
 			green("ok"), len(m.Services), len(m.Tasks), m.PrimaryService())
 	}
 	if approvals > 0 && failed == 0 {
-		fmt.Printf("\n%d command(s) need one-time approval before they run.\n", approvals)
+		fmt.Printf("\n%d command(s) will not run until approved. Read them, then: %s\n",
+			approvals, bold("devbay approve"))
+		// A validation that passes while a bay would refuse to boot is a lie
+		// about the next command's outcome.
+		return 1
 	}
 	if failed > 0 {
 		return 1

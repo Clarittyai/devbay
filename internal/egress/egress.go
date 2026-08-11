@@ -208,9 +208,18 @@ type local struct {
 // Peer containers are reached directly and stay reachable, but the gateway is
 // the route to everything else, including whatever the host has published. A
 // service has no business reaching either.
+//
+// The chain's policy is set to DROP before anything is flushed, and that
+// ordering is the difference between a sandbox and a decoration. Flushing
+// first leaves a window -- and, if any later rule fails, a permanent state --
+// in which the chain is empty and the default policy is ACCEPT: a service with
+// no declared egress reaching the entire internet, reported as enforced. A
+// policy that fails open is worse than no policy, because the failure is
+// invisible and everything downstream believes the confinement is real.
 func rules(locals []local, addrs []string) string {
 	var b strings.Builder
 	b.WriteString("set -e\n")
+	b.WriteString("iptables -P OUTPUT DROP\n")
 	b.WriteString("iptables -F OUTPUT || true\n")
 	b.WriteString("iptables -A OUTPUT -o lo -j ACCEPT\n")
 	b.WriteString("iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n")
@@ -312,6 +321,16 @@ func (e *Enforcer) runSidecar(ctx context.Context, targetID, script string) (str
 		code = int(st.StatusCode)
 	case <-ctx.Done():
 		return "", 0, ctx.Err()
+	}
+
+	// The wait result is confirmed against the container's own record. A wait
+	// that resolves against an already-exited container has been seen to
+	// report zero, and a false success here is not a flake -- it is a service
+	// reported as confined while its rules were never applied.
+	if ins, err := e.cli.ContainerInspect(ctx, res.ID, client.ContainerInspectOptions{}); err == nil {
+		if st := ins.Container.State; st != nil && !st.Running {
+			code = st.ExitCode
+		}
 	}
 
 	logs, _ := e.cli.ContainerLogs(ctx, res.ID, client.ContainerLogsOptions{

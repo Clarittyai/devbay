@@ -37,6 +37,15 @@ func (m *Manager) NewBooter(worktree, name string) *Booter {
 // in what the container printed: a missing variable, a refused connection, a
 // migration that has not run.
 func (b *Booter) Boot(ctx context.Context, m *manifest.Manifest) *verify.Failure {
+	// The candidate was written by a detector reading the repository, or by a
+	// model reading the repository, and a README is repository content too.
+	// Whatever the airlock boots executes here with this developer's checkout
+	// and this developer's machine, so R2 applies with more force during
+	// verification than during an ordinary boot, not less.
+	if f := b.m.approvalGate(ctx, m); f != nil {
+		return f
+	}
+
 	eng, err := engine.New(ctx, engine.Options{
 		Manifest: m,
 		Bay:      b.name,

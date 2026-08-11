@@ -124,6 +124,7 @@ bin/devbay doctor                     # is this machine set up well?
 bin/devbay init                       # propose a devbay.yaml for this repo
 bin/devbay init --verify              # …and prove it boots before writing it
 bin/devbay validate .                 # check it against R1-R7
+bin/devbay approve                    # read and allow any command outside the allowlist
 
 bin/devbay new add-oauth --alias oauth
 bin/devbay ls

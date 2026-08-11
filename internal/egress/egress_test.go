@@ -466,3 +466,41 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(code)
 }
+
+// A policy that fails halfway must fail closed.
+//
+// This is the failure that matters most and shows least: the sidecar dies
+// after flushing and before the rules are in, and the container is left with
+// an empty chain -- which, under the default ACCEPT policy, means the whole
+// internet. Nothing downstream notices, because a service with no declared
+// egress is expected to be silent about the network either way.
+func TestAPartialApplicationFailsClosed(t *testing.T) {
+	cli := dockerOrSkip(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	netName := bayNetwork(t, cli, ctx, "partial-net")
+	id, _, _ := subject(t, cli, ctx, "partial", netName)
+
+	if !canReach(t, cli, ctx, id, outsideAddr, outsidePort) {
+		t.Skip("no internet access from a container here")
+	}
+
+	e := New(cli, func(string, ...any) {})
+	if err := e.ensureImage(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// The real script, truncated after the flush -- exactly what a crash, an
+	// xtables lock contention or an OOM would leave behind.
+	broken := "set -e\niptables -P OUTPUT DROP\niptables -F OUTPUT || true\nexit 1\n"
+	if _, code, err := e.runSidecar(ctx, id, broken); err != nil {
+		t.Fatalf("running the truncated script: %v", err)
+	} else if code == 0 {
+		t.Fatal("a script that exited 1 was reported as successful, so a real failure would be silent")
+	}
+
+	if canReach(t, cli, ctx, id, outsideAddr, outsidePort) {
+		t.Error("a half-applied policy left the container with unrestricted outbound access")
+	}
+}

@@ -166,8 +166,13 @@ func (e *env) post(host, path string) {
 // developer running this on their own machine has their own bays up, and a
 // suite that fails because of those is a suite they stop running.
 func docker(t *testing.T, kind string) int {
+	return dockerFor(t, kind, "app")
+}
+
+// dockerFor counts one project's resources.
+func dockerFor(t *testing.T, kind, name string) int {
 	t.Helper()
-	const project = "label=dev.devbay.project=app"
+	project := "label=dev.devbay.project=" + name
 	var args []string
 	switch kind {
 	case "containers":
@@ -488,4 +493,77 @@ tasks:
 		time.Sleep(2 * time.Second)
 	}
 	t.Error("P: the message never appeared in the bay's own mail catcher")
+}
+
+// TestAnUnapprovedCommandDoesNotRun is scenario Q.
+//
+// R2 lets a repository declare a command outside the allowlist -- bin/dev and
+// friends -- on the condition that a human agrees to it once. The condition is
+// the whole rule, so it gets a scenario: the question is not whether devbay
+// prints a warning, it is whether the command runs.
+func TestAnUnapprovedCommandDoesNotRun(t *testing.T) {
+	e := setup(t)
+
+	if err := os.MkdirAll(filepath.Join(e.repo, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Marks the filesystem when it runs, so "did it run" is answered by
+	// evidence rather than by devbay's own account of itself.
+	script := "#!/bin/sh\ntouch /tmp/devbay-acceptance-ran\nexec nginx -g 'daemon off;'\n"
+	if err := os.WriteFile(filepath.Join(e.repo, "bin", "dev"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.repo, "devbay.yaml"), []byte(`version: 1
+project: gated
+services:
+  web:
+    image: nginx:alpine
+    start: ["./bin/dev"]
+    port: 80
+    primary: true
+    health: {http: /}
+tasks:
+  unit: {run: ["true"], needs: []}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.git("add", "-A")
+	e.git("-c", "user.email=a@t", "-c", "user.name=a", "commit", "-qm", "gated")
+
+	// The bay must refuse, and say what to do about it.
+	out, err := e.try("new", "gated")
+	if err == nil {
+		_, _ = e.try("rm", "gated", "--force")
+		t.Fatal("Q: a bay booted a command nobody had approved")
+	}
+	if !strings.Contains(out, "./bin/dev") || !strings.Contains(out, "devbay approve") {
+		t.Errorf("Q: the refusal did not name the command and the way to allow it:\n%s", out)
+	}
+
+	// Nothing was left half-made by the refusal.
+	if n := dockerFor(t, "containers", "gated"); n != 0 {
+		t.Errorf("Q: a refused bay left %d containers behind", n)
+	}
+
+	// An agent cannot approve on the developer's behalf.
+	cmd := exec.Command(e.bin, "approve")
+	cmd.Dir = e.repo
+	cmd.Env = append(os.Environ(), "DEVBAY_NO_MODEL=1")
+	cmd.Stdin = strings.NewReader("y\ny\ny\n") // an agent answering for the human
+	agentOut, _ := cmd.CombinedOutput()
+	if !strings.Contains(string(agentOut), "human") {
+		t.Errorf("Q: a non-terminal caller was able to approve:\n%s", agentOut)
+	}
+	if out, err := e.try("new", "gated"); err == nil {
+		_, _ = e.try("rm", "gated", "--force")
+		t.Fatalf("Q: the bay booted after a caller that was not a human approved it:\n%s", out)
+	}
+
+	// And with a human's approval on record, it runs.
+	e.run("approve", "--yes")
+	e.run("new", "gated")
+	t.Cleanup(func() { _, _ = e.try("rm", "gated", "--force") })
+	if code, _ := e.get("gated.gated.localhost", "/"); code != 200 {
+		t.Errorf("Q: an approved command did not serve; got %d", code)
+	}
 }
