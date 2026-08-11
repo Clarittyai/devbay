@@ -81,6 +81,31 @@ that races a peer it does not depend on -- and counting those against devbay
 sends the work in the wrong direction. The bar is that **devbay boots what
 compose boots**, and where the two differ it is devbay's job to explain why.
 
+### Where it stood on 2026-08-11
+
+35 stacks, on an arm64 Mac with Docker Desktop: **devbay booted and served 25,
+compose 23**. Twenty worked under both; five worked under devbay and not under
+compose, all of them because compose binds the ports the stack declares and
+something on the machine already held one — which is the collision devbay
+exists to remove.
+
+Three worked under compose and not under devbay, and each is worth stating
+rather than counting:
+
+- **traefik-golang** wants `/var/run/docker.sock`. devbay refuses it, and says
+  so in the generated manifest: a container that can reach the daemon can start
+  any other container on the machine, so the bay would not be isolated from
+  anything. The same refusal costs it `portainer`.
+- **prometheus-grafana** ships a `prometheus.yml` with `api_version: v1`, which
+  current Prometheus rejects. It fails under compose too — `restart:
+  unless-stopped` restarts it forever while Grafana serves, so the stack looks
+  up. devbay fails the boot and prints the config error.
+- **react-rust-postgres** builds `FROM rust:buster`, whose cargo cannot parse a
+  crate manifest published since. devbay runs the identical build.
+
+The number is a snapshot of one machine on one day, not a score. What it is
+for is noticing when a change to `internal/introspect` makes things worse.
+
 It is not in CI: it needs the network, most of an hour, and tens of gigabytes
 of images. It is what to run before believing a change to `internal/introspect`
 is an improvement, because that package cannot be judged against fixtures
