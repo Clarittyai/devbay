@@ -31,12 +31,17 @@ something a developer could see for themselves.
 | G | Only the declared subgraph is materialised | a task with `needs: [api]` starts a service the task did not ask for |
 | H | Host edits reach containers | an edit in the bay's worktree is not served after `devbay watch` reports applying it |
 | I | An agent sees what the CLI sees | MCP reports a different state, URL or task result than the CLI |
-| J | Resting states are honest and reversible | cooling does not free the containers, thawing does not restore service, or data is lost across the cycle |
+| J | Resting states are honest and reversible | cooling does not free the containers, thawing does not restore service, or the bay's checkout does not survive |
 | K | It recovers from a restart | with the proxy container destroyed, a running bay's hostname does not come back |
 | L | Work is never lost | a branch carrying commits is deleted by `devbay rm` |
 | M | Teardown is total | any container, volume, network, built image or worktree survives `devbay rm` |
 | N | Secrets do not leak | a planted credential appears in logs or in any MCP response |
 | O | Undeclared egress is blocked | a service with no `egress:` reaches the internet, or cannot reach its own bay's peers |
+
+Scenario J deliberately does not assert that application data survives. That is
+the application's business: this example's cache declares no volume, so losing
+its contents when it stops is the cache behaving correctly. An acceptance suite
+that asserted otherwise would be testing redis.
 
 ## What it deliberately does not check
 
