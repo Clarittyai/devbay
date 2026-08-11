@@ -221,6 +221,17 @@ func (d *detector) composeMounts(svc composetypes.ServiceConfig) []manifest.Moun
 		if filepath.IsAbs(src) {
 			r, err := filepath.Rel(d.dir, src)
 			if err != nil || strings.HasPrefix(r, "..") {
+				if strings.HasSuffix(src, "docker.sock") {
+					// Worth saying plainly rather than as a path problem. A
+					// container holding this socket can start any other
+					// container, on any image, with any mount -- so the bay is
+					// not isolated from the machine in any sense that matters.
+					d.gap("service %q wants the Docker socket, which devbay will not give it: "+
+						"a container that can reach the daemon can start any other container on this "+
+						"machine, and the bay would not be isolated from anything. Run this service "+
+						"outside devbay", svc.Name)
+					continue
+				}
 				d.gap("service %q binds %s, which is outside the repository; devbay did not carry it over",
 					svc.Name, v.Source)
 				continue
