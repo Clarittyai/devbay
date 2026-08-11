@@ -526,6 +526,17 @@ func (d *detector) fromCompose(ctx context.Context) {
 					s.Env[k] = *v
 				}
 			}
+			// An env_file is configuration devbay deliberately does not copy:
+			// the values in one are frequently credentials, and a manifest is
+			// a committed, reviewable file. Saying nothing about it produced a
+			// service that boots with none of its configuration and no
+			// explanation, which is worse than either copying or refusing.
+			for _, ef := range svc.EnvFiles {
+				d.gap("service %q reads %s, which devbay did not copy -- a manifest is committed and "+
+					"those values are often credentials. Put the ones it needs in `env:`, "+
+					"as literals or as ${secret:...}", name, ef.Path)
+			}
+
 			// The command is what the service actually runs. compose-go has
 			// already split it into an argv array -- devbay never does that
 			// splitting itself -- so transcribing it preserves R1 exactly:

@@ -988,3 +988,30 @@ services:
 		t.Errorf("health = %+v, want a TCP probe on 5672", h)
 	}
 }
+
+// An env_file holds configuration and often credentials. devbay must not copy
+// it into a committed manifest, and must not stay silent about it either --
+// the service boots with none of its configuration otherwise.
+func TestEnvFileIsReportedAndNeverCopied(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"compose.yaml": `
+services:
+  web:
+    image: nginx:alpine
+    ports: ["80:80"]
+    env_file: .env
+`,
+		".env": "SECRET_TOKEN=sk_live_not_a_real_value\n",
+	})
+	res := detect(t, dir)
+	assertValid(t, res)
+
+	for k, v := range res.Manifest.Services["web"].Env {
+		if strings.Contains(v, "sk_live") {
+			t.Fatalf("a value from the env file was copied into the manifest: %s", k)
+		}
+	}
+	if !anyGapMentions(res, ".env") {
+		t.Errorf("the env file was dropped without a word: %v", res.Gaps)
+	}
+}
