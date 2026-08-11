@@ -118,6 +118,29 @@ func (e *Engine) Thaw(ctx context.Context) error {
 	})
 }
 
+// Resume brings a bay back from whichever resting state it is in.
+//
+// "Thaw" is what a developer types to get a bay working again, and they should
+// not have to know whether it was paused or stopped to type the right thing.
+// Unpausing a stopped bay silently did nothing: the command reported the bay's
+// state, which was still cold, and `devbay cool` was a one-way door out of a
+// working bay -- the opposite of what it is documented to be, since cooling is
+// exactly what a machine under memory pressure should do.
+func (e *Engine) Resume(ctx context.Context) error {
+	st, err := e.State(ctx)
+	if err != nil {
+		return err
+	}
+	if st != StateCold {
+		return e.Thaw(ctx)
+	}
+	plan, err := BootPlan(e.m)
+	if err != nil {
+		return err
+	}
+	return e.Warm(ctx, plan)
+}
+
 // Cool stops the bay's containers, keeping volumes.
 //
 // This is the state transition a scheduler under memory pressure should make.
@@ -141,7 +164,19 @@ func (e *Engine) Cool(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	return e.settle(ctx, StateCold)
+	if err := e.settle(ctx, StateCold); err != nil {
+		return err
+	}
+	// The hostname stops resolving too. Left in place it pointed at a stopped
+	// container and the browser got a bare 502, which reads as the application
+	// having crashed rather than as the bay having been put away on purpose.
+	// devbay's own 404 says what actually happened and what to run.
+	if e.prox != nil {
+		if err := e.prox.ClearRoutes(ctx, e.m.Project, e.bay); err != nil {
+			e.Log("  could not withdraw routes: %v", err)
+		}
+	}
+	return nil
 }
 
 // settle waits until the daemon's own view of the bay matches want.
@@ -214,7 +249,10 @@ func (e *Engine) Warm(ctx context.Context, plan *Plan) error {
 			return fmt.Errorf("%s: %w", step.Service, err)
 		}
 	}
-	return nil
+	// The hostname comes back with the bay. Cooling withdrew it, and a bay that
+	// is running again but unreachable at the address the developer bookmarked
+	// is not a bay that came back.
+	return e.Republish(ctx)
 }
 
 // Focus marks this bay as the holder of the project's canonical hostname.

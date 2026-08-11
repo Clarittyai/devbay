@@ -268,36 +268,56 @@ func (m *Manager) rehydrate(ctx context.Context) error {
 
 // republishOrphanedRoutes restores hostnames for bays the proxy has forgotten.
 //
-// The proxy normally carries its own table across invocations, so this does
-// nothing. It matters when the proxy container is newer than the bays -- a
-// machine restart, a `docker rm`, an upgrade -- where the bays are still
-// running and still reachable on their ports, but the hostname a developer has
-// bookmarked answers 404 with no obvious way back.
+// Normally a no-op: the proxy carries its own table across invocations. It
+// matters whenever a bay is running and the proxy does not know how to reach
+// it -- the proxy container being newer than the bays after a restart or an
+// upgrade, or a route lost to some earlier mishap. The bay is up and reachable
+// on its port, but the hostname a developer bookmarked answers 404 and nothing
+// tells them why.
 //
-// Deliberately conditional on the table being empty. Republishing on every
-// command would be a config load per bay per invocation, and would fight with
-// whatever the current command is about to publish.
+// Checked per bay rather than only when the whole table is empty. A single
+// forgotten bay is the more likely shape of this, and it is exactly the one a
+// whole-table check misses: one bay answering while its neighbour 404s.
 func (m *Manager) republishOrphanedRoutes(ctx context.Context) {
-	if m.prox == nil || len(m.bays) == 0 || len(m.prox.Routes()) > 0 {
+	if m.prox == nil || len(m.bays) == 0 {
 		return
 	}
-	restored := 0
-	for _, b := range m.bays {
-		if b.Engine == nil {
+	routed := map[string]bool{}
+	for _, r := range m.prox.Routes() {
+		routed[r.Bay] = true
+	}
+
+	var restored []string
+	for _, name := range sortedBayNames(m.bays) {
+		b := m.bays[name]
+		if b.Engine == nil || routed[name] {
 			continue
 		}
+		// A cold bay has nothing listening, so a route would point at nothing.
+		// Cooling withdraws routes on purpose, and putting them back here would
+		// undo that.
 		if st, err := b.Engine.State(ctx); err != nil || st == engine.StateCold {
-			continue // nothing is listening, so a route would point at nothing
+			continue
 		}
 		if err := b.Engine.Republish(ctx); err != nil {
-			m.Log("bay: could not restore routes for %s: %v", b.Name, err)
+			m.Log("bay: could not restore routes for %s: %v", name, err)
 			continue
 		}
-		restored++
+		restored = append(restored, name)
 	}
-	if restored > 0 {
-		m.Log("bay: restored hostnames for %d bay(s) after a proxy restart", restored)
+	if len(restored) > 0 {
+		m.Log("bay: restored hostnames for %s", strings.Join(restored, ", "))
 	}
+}
+
+// sortedBayNames keeps republishing deterministic.
+func sortedBayNames(bays map[string]*Bay) []string {
+	out := make([]string, 0, len(bays))
+	for name := range bays {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // warnManifestDrift reports when the working copy's manifest differs from the

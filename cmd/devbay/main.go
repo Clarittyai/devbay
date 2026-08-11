@@ -367,7 +367,9 @@ func cmdState(ctx context.Context, which string, args []string) error {
 	case "freeze":
 		err = b.Engine.Freeze(ctx)
 	case "thaw":
-		err = b.Engine.Thaw(ctx)
+		// State-aware: a developer typing "thaw" wants the bay working, and
+		// should not have to know whether it was paused or stopped.
+		err = b.Engine.Resume(ctx)
 	case "cool":
 		err = b.Engine.Cool(ctx)
 	}

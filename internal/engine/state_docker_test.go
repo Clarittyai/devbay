@@ -280,3 +280,50 @@ func TestRoutesFollowTheBay(t *testing.T) {
 		t.Error("bay hostname still reaches a service after teardown")
 	}
 }
+
+// `devbay cool` is what a machine under memory pressure should do, and it was
+// a one-way door: thaw only unpauses, so a cooled bay stayed cold and the
+// command reported that as though nothing were wrong. Resume is state-aware
+// because a developer typing "thaw" wants the bay working, not a lesson in
+// which resting state it was in.
+func TestResumeBringsBackAColdBayAndAFrozenOne(t *testing.T) {
+	e, m := testEngine(t, "resume")
+	ctx := context.Background()
+	plan, err := BootPlan(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Up(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		_ = e.Down(c)
+	})
+
+	// From frozen.
+	if err := e.Freeze(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Resume(ctx); err != nil {
+		t.Fatalf("resume from frozen: %v", err)
+	}
+	if st, _ := e.State(ctx); st != StateWarm {
+		t.Errorf("state after resuming a frozen bay = %v, want warm", st)
+	}
+
+	// From cold -- the case that silently did nothing.
+	if err := e.Cool(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := e.State(ctx); st != StateCold {
+		t.Fatalf("cool did not reach cold, got %v", st)
+	}
+	if err := e.Resume(ctx); err != nil {
+		t.Fatalf("resume from cold: %v", err)
+	}
+	if st, _ := e.State(ctx); st != StateWarm {
+		t.Errorf("state after resuming a cold bay = %v, want warm", st)
+	}
+}
