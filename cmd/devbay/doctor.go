@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 
 	"github.com/Clarittyai/devbay/internal/ports"
@@ -215,9 +218,28 @@ func checkDisk(ctx context.Context, cli *client.Client, check func(bool, string,
 	summary := fmt.Sprintf("images %.1f GiB, volumes %.1f GiB, build cache %.1f GiB",
 		float64(images)/gb, float64(volumes)/gb, float64(cache)/gb)
 
-	// No portable way to read the VM's free space through the API, so this
-	// reports what devbay can see and says what to do about it. A threshold
-	// rather than a hard failure: plenty of machines run happily at 20 GiB.
+	// How much is left matters more than how much is used, and the API cannot
+	// answer it -- so ask the filesystem the containers actually write to.
+	if free, ok := freeSpace(ctx, cli); ok {
+		switch {
+		case free < 3*gb:
+			check(false, fmt.Sprintf("the container runtime has %.1f GiB free", float64(free)/gb),
+				"builds and databases will fail with errors that look like application bugs -- "+
+					"`no space left on device` from inside a container. "+
+					"`docker system prune` and `devbay rm` on bays you are done with.")
+			return
+		case free < 10*gb:
+			note(fmt.Sprintf("the container runtime has %.1f GiB free", float64(free)/gb),
+				summary+". One large image or a seeded database will use it.")
+			return
+		}
+		check(true, fmt.Sprintf("runtime storage %.1f GiB free", float64(free)/gb), summary)
+		return
+	}
+
+	// No free-space reading available, so report what devbay can see instead.
+	// A threshold rather than a hard failure: plenty of machines run happily
+	// at 20 GiB.
 	if total > 20*gb {
 		note(fmt.Sprintf("the container runtime is holding %.1f GiB", float64(total)/gb),
 			summary+". Running out shows up as an unrelated-looking error inside a container -- "+
@@ -225,4 +247,70 @@ func checkDisk(ctx context.Context, cli *client.Client, check func(bool, string,
 		return
 	}
 	check(true, fmt.Sprintf("runtime storage %.1f GiB", float64(total)/gb), summary)
+}
+
+// freeSpace reads the free space on the filesystem containers write to.
+//
+// Through a container, because on macOS and on any non-local daemon that
+// filesystem is inside a VM and the host cannot see it. This is the number
+// that actually predicts the failure: usage tells you nothing without knowing
+// the size of the disk, and the disk here is a VM image that the developer
+// sized months ago and has not thought about since.
+func freeSpace(ctx context.Context, cli *client.Client) (int64, bool) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	res, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image: "busybox:stable",
+			Cmd:   []string{"df", "-P", "/"},
+			// A TTY so the daemon does not multiplex the output into framed
+			// chunks; this reads one short line and has no use for stderr.
+			Tty: true,
+		},
+	})
+	if err != nil {
+		return 0, false // not present and not worth a pull inside doctor
+	}
+	defer func() {
+		_, _ = cli.ContainerRemove(context.WithoutCancel(ctx), res.ID,
+			client.ContainerRemoveOptions{Force: true})
+	}()
+	if _, err := cli.ContainerStart(ctx, res.ID, client.ContainerStartOptions{}); err != nil {
+		return 0, false
+	}
+	wait := cli.ContainerWait(ctx, res.ID, client.ContainerWaitOptions{
+		Condition: container.WaitConditionNotRunning,
+	})
+	select {
+	case <-wait.Error:
+		return 0, false
+	case <-wait.Result:
+	case <-ctx.Done():
+		return 0, false
+	}
+
+	logs, err := cli.ContainerLogs(ctx, res.ID, client.ContainerLogsOptions{ShowStdout: true})
+	if err != nil {
+		return 0, false
+	}
+	defer logs.Close()
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, logs); err != nil {
+		return 0, false
+	}
+	// Filesystem 1024-blocks Used Available Capacity Mounted
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) < 2 {
+		return 0, false
+	}
+	fields := strings.Fields(lines[len(lines)-1])
+	if len(fields) < 4 {
+		return 0, false
+	}
+	blocks, err := strconv.ParseInt(fields[3], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return blocks * 1024, true
 }
