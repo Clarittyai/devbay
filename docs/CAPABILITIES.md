@@ -148,6 +148,14 @@ Go, Node, Python and Safari (before macOS 26) do not. So devbay gives code the
 `127.0.0.1:<port>` address and reserves hostnames for browsers. `devbay url`
 prints both and says which is which.
 
+**Frameworks keep their own list of hostnames they will answer for.** Django's
+`ALLOWED_HOSTS`, Rails' `config.hosts`, Vite's `server.allowedHosts`. A bay
+hostname is not on it, so the application returns 400 to a browser while
+answering devbay's own probe — which uses `127.0.0.1` — perfectly. devbay
+fills the setting in where the repository says it reads it from the
+environment, and where it cannot, the boot says which setting to change. It is
+the one failure that makes a working bay look broken.
+
 **A published port accepts before the service listens.** Docker's userland
 proxy binds the host port when the container is created, so a plain connect
 probe reports a database ready while it is still running initdb. devbay's
