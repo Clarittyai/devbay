@@ -11,11 +11,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/client"
 
 	"github.com/Clarittyai/devbay/internal/manifest"
@@ -60,36 +60,9 @@ func (e *Engine) buildImage(ctx context.Context, name string, s *manifest.Servic
 	}
 
 	e.Log("  building %s from %s", name, rel(e.worktree, root))
-	tarball, err := tarDirectory(root)
-	if err != nil {
-		return "", fmt.Errorf("build: packing %s: %w", root, err)
-	}
 
-	resp, err := e.cli.ImageBuild(ctx, tarball, client.ImageBuildOptions{
-		Tags:       []string{tag},
-		Dockerfile: dockerfile,
-		Target:     s.Build.Target,
-		Remove:     true,
-		Version:    build.BuilderBuildKit,
-		// Labelled for teardown, but with the project rather than the bay.
-		// The tag is content-addressed, so two bays on the same commit resolve
-		// to one image and only the first of them actually builds it -- label
-		// it with that bay and the second bay's teardown does not recognise
-		// its own image, while the first bay's teardown cannot remove it
-		// because the second is still running. The image then survives both,
-		// which is exactly what happened: three images left behind by a pair
-		// of bays that had otherwise torn down cleanly.
-		Labels: e.imageLabels(name),
-	})
-	if err != nil {
-		return "", fmt.Errorf("build: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if err := drainBuild(resp.Body, func(line string) {
-		e.Log("    %s", line)
-	}); err != nil {
-		return "", fmt.Errorf("build %s: %w", name, err)
+	if err := e.runBuild(ctx, name, tag, root, dockerfile, s.Build.Target); err != nil {
+		return "", err
 	}
 	return tag, nil
 }
@@ -461,4 +434,96 @@ func (e *Engine) imageLabels(service string) map[string]string {
 		LabelProject: e.m.Project,
 		LabelService: service,
 	}
+}
+
+// runBuild builds the image, preferring the docker CLI.
+//
+// The CLI is used because BuildKit is: a Dockerfile that opens
+// `FROM --platform=${BUILDPLATFORM}`, or mounts a cache, or uses a heredoc, is
+// ordinary now and the classic builder cannot parse any of it. BuildKit over
+// the raw daemon API needs a session the Go client does not establish -- it
+// works against Docker Desktop, which sets one up itself, and fails on plain
+// Docker Engine with "no active sessions". Relying on it would mean builds
+// that work on one developer's machine and not on another's, which is the
+// worst property a build path can have.
+//
+// The CLI also honours .dockerignore, which a hand-rolled context tar does
+// not. That is not cosmetic: without it the context carries .env files and
+// local state into the image.
+//
+// Every argument is passed as argv, with no shell anywhere near it, and the
+// values that come from the manifest are checked not to look like flags -- so
+// a crafted dockerfile or target name cannot turn itself into an option.
+func (e *Engine) runBuild(ctx context.Context, service, tag, root, dockerfile, target string) error {
+	for _, v := range []string{tag, dockerfile, target} {
+		if strings.HasPrefix(v, "-") {
+			return fmt.Errorf("build: %q may not begin with a dash", v)
+		}
+	}
+
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		e.Log("    docker CLI not found; falling back to the daemon's classic builder, which cannot parse BuildKit syntax")
+		return e.buildViaAPI(ctx, service, tag, root, dockerfile, target)
+	}
+
+	argv := []string{"build", "--file", filepath.Join(root, filepath.FromSlash(dockerfile)), "--tag", tag}
+	if target != "" {
+		argv = append(argv, "--target", target)
+	}
+	labels := e.imageLabels(service)
+	for _, k := range sortedKeys(labels) {
+		argv = append(argv, "--label", k+"="+labels[k])
+	}
+	argv = append(argv, root)
+
+	cmd := exec.CommandContext(ctx, docker, argv...)
+	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("build %s: %w\n%s", service, err, lastLines(out.String(), 20))
+	}
+	return nil
+}
+
+// buildViaAPI is the fallback for a machine with no docker CLI.
+func (e *Engine) buildViaAPI(ctx context.Context, service, tag, root, dockerfile, target string) error {
+	tarball, err := tarDirectory(root)
+	if err != nil {
+		return fmt.Errorf("build: packing %s: %w", root, err)
+	}
+	resp, err := e.cli.ImageBuild(ctx, tarball, client.ImageBuildOptions{
+		Tags:       []string{tag},
+		Dockerfile: dockerfile,
+		Target:     target,
+		Remove:     true,
+		Labels:     e.imageLabels(service),
+	})
+	if err != nil {
+		return fmt.Errorf("build: %w", err)
+	}
+	defer resp.Body.Close()
+	if err := drainBuild(resp.Body, func(line string) { e.Log("    %s", line) }); err != nil {
+		return fmt.Errorf("build %s: %w", service, err)
+	}
+	return nil
+}
+
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// lastLines keeps the tail of build output, which is where the reason is.
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }

@@ -306,3 +306,23 @@ func imagesFor(t *testing.T, cli *client.Client, ctx context.Context, project, b
 	}
 	return out
 }
+
+// A dockerfile or target that looks like a flag must not become one. These
+// values come from the manifest, and the manifest may be generated.
+func TestBuildArgumentsCannotSmuggleFlags(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM alpine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := engineAt(t, dir)
+	for _, tc := range []struct{ tag, dockerfile, target string }{
+		{"--tag=evil", "Dockerfile", ""},
+		{"ok:1", "--file=/etc/passwd", ""},
+		{"ok:1", "Dockerfile", "--privileged"},
+	} {
+		err := e.runBuild(context.Background(), "web", tc.tag, dir, tc.dockerfile, tc.target)
+		if err == nil || !strings.Contains(err.Error(), "may not begin with a dash") {
+			t.Errorf("runBuild(%q,%q,%q) = %v; want a refusal", tc.tag, tc.dockerfile, tc.target, err)
+		}
+	}
+}
