@@ -26,6 +26,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -96,6 +97,7 @@ func Detect(ctx context.Context, dir string) (*Result, error) {
 	d.fromPython()
 	d.fromGo()
 
+	d.rewireEnv()
 	d.inferHealth()
 	d.choosePrimary()
 	d.checkGaps()
@@ -183,6 +185,105 @@ func (d *detector) composeMounts(svc composetypes.ServiceConfig) []manifest.Moun
 			src = "./" + src
 		}
 		out = append(out, manifest.Mount{Source: src, Target: v.Target})
+	}
+	return out
+}
+
+// rewireEnv turns hardcoded addresses between services into references.
+//
+// This is the whole multi-service problem in one place. A compose file wires a
+// client to its API with a literal -- "http://localhost:4000" for the browser,
+// "http://server:4000" for server-to-server -- and both are wrong the moment
+// there is more than one instance of the stack. localhost:4000 belongs to
+// whichever bay happens to hold that port, and "server" resolves inside every
+// bay at once, so every client would talk to some arbitrary bay's API.
+// Transcribing them verbatim produces a bay that boots, reports healthy, and
+// does not work.
+//
+// devbay already knows the right answers; they just have to be used. Which one
+// depends on who does the calling, and a compose file says so more reliably
+// than any guess about variable names:
+//
+//   - A value pointing at localhost was written to be opened from the
+//     developer's machine -- a browser or a curl -- because inside compose,
+//     containers address each other by service name. That is the browser
+//     plane: ${bay.<svc>.public_url}.
+//   - A value pointing at a service name is one container calling another.
+//     That is the container plane: ${bay.<svc>.url}.
+func (d *detector) rewireEnv() {
+	byPort := map[int][]string{}
+	for name, s := range d.m.Services {
+		if s.Port != 0 {
+			byPort[s.Port] = append(byPort[s.Port], name)
+		}
+		for _, p := range s.Ports {
+			byPort[p] = append(byPort[p], name)
+		}
+	}
+	for _, names := range byPort {
+		sort.Strings(names)
+	}
+
+	for _, svcName := range sortedKeysOf(d.m.Services) {
+		s := d.m.Services[svcName]
+		for _, key := range sortedKeysOf(s.Env) {
+			rewritten, target, plane, ok := d.rewireValue(s.Env[key], byPort, svcName)
+			if !ok {
+				continue
+			}
+			s.Env[key] = rewritten
+			d.note(SourceConvention, "",
+				fmt.Sprintf("%s.%s points at service %q, so it was rewired to its %s address",
+					svcName, key, target, plane))
+		}
+	}
+}
+
+// rewireValue rewrites one address, and reports what it decided.
+func (d *detector) rewireValue(value string, byPort map[int][]string, self string) (out, target, plane string, ok bool) {
+	u, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", "", "", false
+	}
+	host := u.Hostname()
+	port, _ := strconv.Atoi(u.Port())
+
+	switch {
+	case host == "localhost" || host == "127.0.0.1" || host == "0.0.0.0" || host == "host.docker.internal":
+		// Reached from the developer's machine, so it is the browser origin.
+		// Without a port there is nothing to match against, and guessing which
+		// service someone meant would be worse than leaving it alone.
+		if port == 0 {
+			return "", "", "", false
+		}
+		owners := byPort[port]
+		if len(owners) != 1 {
+			if len(owners) > 1 {
+				d.gap("a value points at localhost:%d, which %d services expose (%s); pick one and write ${bay.<service>.public_url}",
+					port, len(owners), strings.Join(owners, ", "))
+			}
+			return "", "", "", false
+		}
+		return replaceHost(u, "${bay."+owners[0]+".public_url}"), owners[0], "browser", true
+
+	default:
+		// A service name: one container calling another.
+		if _, isService := d.m.Services[host]; !isService || host == self {
+			return "", "", "", false
+		}
+		return replaceHost(u, "${bay."+host+".url}"), host, "container", true
+	}
+}
+
+// replaceHost swaps a URL's scheme and authority for a reference, keeping the
+// path -- an API base of http://localhost:4000/v1 must stay pointed at /v1.
+func replaceHost(u *url.URL, ref string) string {
+	out := ref
+	if p := strings.TrimSuffix(u.EscapedPath(), "/"); p != "" {
+		out += p
+	}
+	if u.RawQuery != "" {
+		out += "?" + u.RawQuery
 	}
 	return out
 }

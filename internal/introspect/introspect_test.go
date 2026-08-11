@@ -595,3 +595,92 @@ func keys[V any](m map[string]V) []string {
 	}
 	return out
 }
+
+// The multi-service problem: a compose file wires services together with
+// literal addresses, and every one of them is wrong once there is more than
+// one instance of the stack. Transcribing them verbatim produces a bay that
+// boots, reports healthy, and does not work -- the client calls
+// localhost:4000, which belongs to whichever bay holds that port.
+func TestHardcodedAddressesBetweenServicesAreRewired(t *testing.T) {
+	dir := fixture(t, map[string]string{"docker-compose.yml": `
+services:
+  server:
+    image: node:22-alpine
+    ports: ["4000:4000"]
+  worker:
+    image: node:22-alpine
+    environment:
+      INTERNAL_API: http://server:4000/v1
+  client:
+    image: node:22-alpine
+    ports: ["3000:3000"]
+    environment:
+      API_URL: http://localhost:4000
+      VITE_API_BASE: http://127.0.0.1:4000/api?v=2
+      UNRELATED: http://example.com/docs
+`})
+	res, err := Detect(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := res.Manifest.Services["client"]
+	if client == nil {
+		t.Fatal("no client service")
+	}
+
+	// localhost means "opened from the developer's machine", so it is the
+	// browser origin -- the value a script tag or a fetch() will use.
+	if got := client.Env["API_URL"]; got != "${bay.server.public_url}" {
+		t.Errorf("API_URL = %q, want the browser address of server", got)
+	}
+	// Path and query survive: an API base of /api?v=2 still points there.
+	if got := client.Env["VITE_API_BASE"]; got != "${bay.server.public_url}/api?v=2" {
+		t.Errorf("VITE_API_BASE = %q, want the browser address with its path kept", got)
+	}
+	// A third-party address is not devbay's business.
+	if got := client.Env["UNRELATED"]; got != "http://example.com/docs" {
+		t.Errorf("UNRELATED was rewritten to %q; only addresses of this stack's own services should change", got)
+	}
+
+	// A service name means one container calling another, which is the
+	// container plane rather than the browser one. Getting these two the wrong
+	// way round is the classic "works in the browser, breaks in SSR" bug.
+	if got := res.Manifest.Services["worker"].Env["INTERNAL_API"]; got != "${bay.server.url}/v1" {
+		t.Errorf("INTERNAL_API = %q, want the container address of server", got)
+	}
+}
+
+// Ambiguity is reported rather than guessed at: picking one of two services
+// silently would send half the traffic to the wrong place.
+func TestAnAmbiguousAddressIsReportedNotGuessed(t *testing.T) {
+	dir := fixture(t, map[string]string{"docker-compose.yml": `
+services:
+  a:
+    image: node:22-alpine
+    ports: ["8080:8080"]
+  b:
+    image: node:22-alpine
+    ports: ["8080:8080"]
+  client:
+    image: node:22-alpine
+    ports: ["3000:3000"]
+    environment:
+      API_URL: http://localhost:8080
+`})
+	res, err := Detect(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Manifest.Services["client"].Env["API_URL"]; got != "http://localhost:8080" {
+		t.Errorf("an ambiguous address was rewritten to %q", got)
+	}
+	var mentioned bool
+	for _, g := range res.Gaps {
+		if strings.Contains(g, "8080") && strings.Contains(g, "public_url") {
+			mentioned = true
+		}
+	}
+	if !mentioned {
+		t.Errorf("the ambiguity was not reported to the developer; gaps were %v", res.Gaps)
+	}
+}
