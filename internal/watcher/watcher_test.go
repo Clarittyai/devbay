@@ -59,7 +59,7 @@ services:
     health: {http: /}
     watch: ["`+tc.pattern+`"]
 tasks:
-  unit: {run: [true], needs: []}
+  unit: {run: ["true"], needs: []}
 `)}
 		got := len(w.Match(tc.path)) == 1
 		if got != tc.want {
@@ -86,7 +86,7 @@ services:
     health: {http: /}
     watch: ["shared/**", "web/**"]
 tasks:
-  unit: {run: [true], needs: []}
+  unit: {run: ["true"], needs: []}
 `)}
 	if got := w.Match("shared/types.ts"); len(got) != 2 {
 		t.Errorf("shared change reached %v, want both services", got)
@@ -151,7 +151,7 @@ services:
     health: {http: /}
     watch: ["src/**"]
 tasks:
-  unit: {run: [true], needs: []}
+  unit: {run: ["true"], needs: []}
 `
 
 // The claim the package makes: an edit on the host reaches the container,
@@ -294,7 +294,7 @@ project: p
 services:
   web: {image: node:22, port: 3000, health: {http: /}}
 tasks:
-  unit: {run: [true], needs: []}
+  unit: {run: ["true"], needs: []}
 `), ReloaderFunc(func(context.Context, string) error { return nil }), nil)
 	if err != nil {
 		t.Fatal(err)

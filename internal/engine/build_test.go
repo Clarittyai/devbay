@@ -203,7 +203,7 @@ services:
     primary: true
     health: {http: /}
 tasks:
-  unit: {run: [true], needs: []}
+  unit: {run: ["true"], needs: []}
 `
 
 // The claim: a service that builds from source boots. Most repositories
@@ -365,7 +365,7 @@ services:
     watch_action: rebuild
     health: {http: /}
 tasks:
-  unit: {run: [true], needs: []}
+  unit: {run: ["true"], needs: []}
 `))
 	if err != nil {
 		t.Fatal(err)

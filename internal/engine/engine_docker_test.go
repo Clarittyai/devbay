@@ -47,7 +47,7 @@ services:
     kind: oneshot
     image: busybox:latest
     needs: [cache]
-    run: [true]
+    run: ["true"]
 
   web:
     image: nginx:alpine
@@ -60,8 +60,8 @@ services:
       timeout: 60s
 
 tasks:
-  nothing: {run: [true], needs: []}
-  witheverything: {run: [true], needs: [web]}
+  nothing: {run: ["true"], needs: []}
+  witheverything: {run: ["true"], needs: [web]}
 `
 
 func dockerOrSkip(t *testing.T) *client.Client {
@@ -357,7 +357,7 @@ services:
       http: /
       timeout: 5s
 tasks:
-  nothing: {run: [true], needs: []}
+  nothing: {run: ["true"], needs: []}
 `
 	m, err := manifest.Parse([]byte(src))
 	if err != nil {

@@ -14,7 +14,11 @@
 // manifest to arbitrary shell.
 package manifest
 
-import "gopkg.in/yaml.v3"
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
 
 // Argv is a command as an argument vector.
 //
@@ -22,6 +26,39 @@ import "gopkg.in/yaml.v3"
 // rather than being coerced — the type system does the first half of the
 // enforcement and Validate does the rest.
 type Argv []string
+
+// UnmarshalYAML requires every element to be a string.
+//
+// YAML resolves bare `true`, `5` and `null` to a boolean, an integer and a
+// null, and the decoder will happily coerce those into "true", "5" and "".
+// That coercion is how `run: ["true"]` came to mean the /bin/true command by
+// accident: it reads as the boolean, and a reader has to know YAML's scalar
+// rules to see why it works. It also made devbay accept manifests the
+// published schema rejects, which is the one divergence the schema exists to
+// prevent -- a third party reimplementing from the spec would refuse a file
+// devbay runs.
+//
+// So the value has to be written the way it is meant: ["true"], ["5"].
+func (a *Argv) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.SequenceNode {
+		// R1, said in full here rather than left to the decoder. "cannot
+		// unmarshal !!str into []string" is true and useless; this is the one
+		// mistake worth spelling out, because a shell string is what everybody
+		// reaches for first and there is no way to express one in this format.
+		return fmt.Errorf("line %d: commands are argv arrays, not shell strings — write [pnpm, dev], not %q. "+
+			"There is no way to express a shell command in this format", value.Line, value.Value)
+	}
+	out := make([]string, 0, len(value.Content))
+	for _, item := range value.Content {
+		if item.Kind != yaml.ScalarNode || (item.Tag != "!!str" && item.Tag != "") {
+			return fmt.Errorf("line %d: command arguments must be strings; write %q rather than %s",
+				item.Line, item.Value, item.Value)
+		}
+		out = append(out, item.Value)
+	}
+	*a = out
+	return nil
+}
 
 // Manifest is a parsed devbay.yaml.
 type Manifest struct {

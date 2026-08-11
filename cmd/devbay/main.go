@@ -519,13 +519,8 @@ func validate(paths []string) int {
 		m, err := manifest.Load(p)
 		if err != nil {
 			fmt.Printf("%s\n  %s %v\n", p, red("error"), err)
-			// Only when a *command* failed to decode. The hint used to fire on
-			// any string-into-struct mismatch, so `build: ./web` was answered
-			// with a lecture about argv arrays -- pointing at a rule that has
-			// nothing to do with the field, which is worse than no hint.
-			if strings.Contains(err.Error(), "manifest.Argv") {
-				fmt.Printf("         %s\n", dim(`R1: commands are argv arrays, not shell strings — write [pnpm, dev], not "pnpm dev"`))
-			}
+			// No hint here any more: the parser names the rule and the fix in
+			// the error itself, and repeating it printed the same advice twice.
 			failed++
 			continue
 		}

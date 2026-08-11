@@ -34,8 +34,11 @@ func TestInvalidManifestIsRejectedAndLeavesNothing(t *testing.T) {
 	if err == nil {
 		t.Fatal("a manifest with a shell string should not produce a bay")
 	}
-	if !strings.Contains(err.Error(), "unmarshal") && !strings.Contains(err.Error(), "not valid") {
-		t.Errorf("the error should point at the manifest, got: %v", err)
+	// The message has to name the rule and the fix. It used to be "cannot
+	// unmarshal !!str into []string", which is true and tells a developer --
+	// or a model repairing the file -- nothing they can act on.
+	if !strings.Contains(err.Error(), "argv arrays") {
+		t.Errorf("the error does not say what to write instead, got: %v", err)
 	}
 	assertNoTrace(t, m, "badyaml")
 }

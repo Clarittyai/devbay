@@ -93,7 +93,7 @@ services:
     port: 3000
     health: {http: /}
 tasks:
-  unit: {run: [true], needs: []}
+  unit: {run: ["true"], needs: []}
 `))
 	if err != nil {
 		t.Fatal(err)

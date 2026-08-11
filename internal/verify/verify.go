@@ -242,15 +242,10 @@ func admit(data []byte) (*manifest.Manifest, *Failure) {
 	m, err := manifest.Parse(data)
 	if err != nil {
 		msg := err.Error()
-		// Scoped to commands. Firing on any string-into-struct mismatch meant
-		// `build: ./web` was answered with a lecture about argv arrays, which
-		// sends a patcher off to fix a rule that was never broken.
-		if strings.Contains(msg, "manifest.Argv") {
-			// The most common way a model gets this wrong, and the one worth
-			// naming precisely, because "cannot unmarshal" tells it nothing.
-			msg += "\n\nCommands must be argv arrays, not shell strings: write [pnpm, dev], not \"pnpm dev\". " +
-				"There is no way to express a shell command in this format."
-		}
+		// The parser now says this itself, in full, so there is nothing to
+		// add. Kept as a marker of where the guidance lives: a patcher told
+		// "cannot unmarshal" learns nothing, and that message is the parser's
+		// job rather than this package's.
 		return nil, &Failure{Stage: StageParse, Message: msg}
 	}
 
