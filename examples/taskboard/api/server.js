@@ -20,7 +20,20 @@ function redis(...args) {
   });
 }
 
+// A task may carry a priority, stored as "priority:title".
+function encodeTask(params) {
+  const title = params.get('title') || 'untitled';
+  const priority = params.get('priority');
+  return priority ? priority + ':' + title : title;
+}
+
 const parseList = raw => raw.split('\r\n').filter((l, i) => i > 0 && l && !l.startsWith('$') && !l.startsWith('*'));
+
+module.exports = { encodeTask, parseList };
+
+// Only listen when run directly, so a test can require this file for its
+// helpers without starting a second server on the same port.
+if (require.main !== module) return;
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -40,7 +53,7 @@ http.createServer(async (req, res) => {
       return;
     }
     if (url.pathname === '/tasks' && req.method === 'POST') {
-      await redis('RPUSH', 'tasks', url.searchParams.get('title') || 'untitled');
+      await redis('RPUSH', 'tasks', encodeTask(url.searchParams));
       res.statusCode = 201;
       res.end(JSON.stringify({ created: true }));
       return;

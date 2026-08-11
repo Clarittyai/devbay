@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -343,17 +344,42 @@ func (e *Engine) longRunning(ctx context.Context) ([]container.Summary, error) {
 	return out, nil
 }
 
+// each applies fn to every long-running container, concurrently.
+//
+// Concurrent because these are stop, start, pause and unpause, and each one
+// waits on a container that has no idea the others exist. Done in sequence,
+// cooling a four-service bay took twenty-one seconds -- every service's
+// shutdown grace period, one after another -- which is long enough that nobody
+// reaches for the command that exists to relieve memory pressure. The daemon
+// handles them independently; there is no ordering to preserve here, unlike a
+// boot, where `needs` is the whole point.
 func (e *Engine) each(ctx context.Context, what string, fn func(id string) error) error {
 	list, err := e.longRunning(ctx)
 	if err != nil {
 		return err
 	}
-	var errs []error
+
+	var (
+		mu   sync.Mutex
+		errs []error
+		wg   sync.WaitGroup
+	)
 	for _, c := range list {
-		if err := fn(c.ID); err != nil {
-			errs = append(errs, fmt.Errorf("%s %s: %w", what, c.Labels[LabelService], err))
-		}
+		wg.Add(1)
+		go func(id, service string) {
+			defer wg.Done()
+			if err := fn(id); err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("%s %s: %w", what, service, err))
+				mu.Unlock()
+			}
+		}(c.ID, c.Labels[LabelService])
 	}
+	wg.Wait()
+
+	// Sorted, so the same failure reports the same way twice. Goroutines
+	// finish in whatever order the daemon answers them.
+	sort.Slice(errs, func(i, j int) bool { return errs[i].Error() < errs[j].Error() })
 	return errors.Join(errs...)
 }
 

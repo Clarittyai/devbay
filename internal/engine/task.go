@@ -23,14 +23,18 @@ import (
 // open the file and fix the line; an agent that receives stdout has to guess
 // at the runner's format, and it guesses differently each time.
 type TaskResult struct {
-	Task       string           `json:"task"`
-	ExitCode   int              `json:"exit_code"`
-	DurationMS int64            `json:"duration_ms"`
-	Total      int              `json:"total,omitempty"`
-	Passed     int              `json:"passed,omitempty"`
-	Failed     int              `json:"failed,omitempty"`
-	Skipped    int              `json:"skipped,omitempty"`
-	Failures   []report.Failure `json:"failures,omitempty"`
+	Task       string `json:"task"`
+	ExitCode   int    `json:"exit_code"`
+	DurationMS int64  `json:"duration_ms"`
+	Total      int    `json:"total,omitempty"`
+	// Always emitted, never omitted when zero. This is the agent-facing
+	// answer to "did my change work", and a missing key is not the same
+	// message as a zero: it makes a clean run indistinguishable from a run
+	// whose results could not be read, and one of those means try again.
+	Passed   int              `json:"passed"`
+	Failed   int              `json:"failed"`
+	Skipped  int              `json:"skipped"`
+	Failures []report.Failure `json:"failures,omitempty"`
 	// Output is the tail of the run, scrubbed. Present so a failure with no
 	// parseable report is still actionable rather than opaque.
 	Output string `json:"output,omitempty"`
@@ -71,11 +75,10 @@ func (e *Engine) RunTask(ctx context.Context, taskName string) (*TaskResult, err
 		return nil, err
 	}
 
-	if t.Timeout != "" {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, parseDuration(t.Timeout, 10*time.Minute))
-		defer cancel()
-	}
+	limit := parseDuration(t.Timeout, 10*time.Minute)
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, limit)
+	defer cancel()
 
 	// The report file is written into the worktree, which is bind-mounted, so
 	// it lands on the host and needs no copying out of the container. Removing
@@ -103,6 +106,14 @@ func (e *Engine) RunTask(ctx context.Context, taskName string) (*TaskResult, err
 
 	start := time.Now()
 	code, output, err := e.exec(ctx, target, t.Run, env)
+	// A task that runs out of time is a normal outcome -- a hung test, an
+	// infinite loop -- and has to read like one. Left as the underlying error
+	// it surfaced as "use of closed network connection" against the Docker
+	// socket, which points the developer at their container runtime instead of
+	// at their test.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, fmt.Errorf("task %q ran for %s without finishing; raise `timeout:` if it needs longer", taskName, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -206,9 +217,30 @@ func (e *Engine) execIn(ctx context.Context, id string, argv manifest.Argv, env 
 		return 0, "", err
 	}
 	defer att.Close()
+	// The read below does not observe the context on its own, so cancellation
+	// has to reach it by closing the connection. Without this a task whose
+	// container went away mid-exec -- a watcher replacing it, a crash, a
+	// `docker rm` -- blocked forever with nothing on screen, and ^C did not
+	// help because the CLI was inside io.Copy rather than waiting on a select.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			att.Close()
+		case <-stop:
+		}
+	}()
 
 	var sb strings.Builder
 	if _, err := io.Copy(&sb, io.LimitReader(demux(att.Reader), 8<<20)); err != nil && !errors.Is(err, io.EOF) {
+		// A cancelled read reports itself as a closed socket, because closing
+		// the socket is how the cancellation was delivered. Reporting that
+		// verbatim tells the developer their Docker connection broke, which is
+		// both wrong and alarming.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, sb.String(), ctxErr
+		}
 		return 0, sb.String(), err
 	}
 

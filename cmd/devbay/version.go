@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 	"runtime/debug"
+	"strings"
 )
 
 // Build information, injected at link time by the release build:
@@ -36,7 +37,10 @@ func cmdVersion() {
 					d = s.Value
 				}
 			case "vcs.modified":
-				if s.Value == "true" {
+				// Go already suffixes the version it derives from VCS, so
+				// appending unconditionally produced "v0.1.0+dirty+dirty" --
+				// which reads as a broken build rather than an uncommitted one.
+				if s.Value == "true" && !strings.HasSuffix(v, "+dirty") {
 					v += "+dirty"
 				}
 			}

@@ -327,3 +327,38 @@ func TestResumeBringsBackAColdBayAndAFrozenOne(t *testing.T) {
 		t.Errorf("state after resuming a cold bay = %v, want warm", st)
 	}
 }
+
+// Cooling is what a machine under memory pressure should do, so it has to be
+// quick enough that people use it. Stopping one container at a time meant
+// waiting out every service's shutdown grace period in turn: twenty-one
+// seconds for a four-service bay, which is long enough to put anyone off.
+func TestCoolingStopsServicesConcurrently(t *testing.T) {
+	e, m := testEngine(t, "concurrent")
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	plan, err := BootPlan(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Up(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+
+	// Three long-running services, each with a 10s stop timeout. Sequential
+	// stops would exceed this bound; concurrent ones finish in about one
+	// service's worth of time.
+	start := time.Now()
+	if err := e.Cool(ctx); err != nil {
+		t.Fatalf("cool: %v", err)
+	}
+	took := time.Since(start)
+	t.Logf("cooled in %s", took.Round(time.Millisecond))
+
+	if st, _ := e.State(ctx); st != StateCold {
+		t.Errorf("state = %v, want cold", st)
+	}
+	if took > 20*time.Second {
+		t.Errorf("cooling took %s; services are being stopped one after another", took.Round(time.Second))
+	}
+}
