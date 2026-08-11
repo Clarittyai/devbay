@@ -40,6 +40,7 @@ something a developer could see for themselves.
 | P | Emulators remove the need for credentials | a bay declaring `externals:` cannot exercise the dependency without a real key |
 | Q | An unapproved command does not run | a command outside the allowlist executes without a human's approval, or a non-human caller can grant it |
 | R | Seeding is paid for once | the second bay of a project re-runs the migration suite, restores incomplete data, or shares a database with the first |
+| S | Bays stay within a budget | a new bay pushes the machine past the resident budget, or the focused bay is the one stopped |
 
 Scenario J deliberately does not assert that application data survives. That is
 the application's business: this example's cache declares no volume, so losing

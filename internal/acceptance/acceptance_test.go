@@ -682,3 +682,75 @@ tasks:
 		t.Errorf("R: a write in one bay changed another bay's data (%q)", strings.TrimSpace(string(out)))
 	}
 }
+
+// TestBaysStayWithinABudget is scenario S.
+//
+// Five bays is the number the design was sized against, and nothing enforces
+// it without a daemon -- so devbay enforces it at the only moment it is
+// running, which is when a new bay is created. The claim is that the budget
+// holds and that the bay the developer is looking at is never the one stopped.
+func TestBaysStayWithinABudget(t *testing.T) {
+	e := setup(t)
+
+	if err := os.WriteFile(filepath.Join(e.repo, "devbay.yaml"), []byte(`version: 1
+project: budget
+services:
+  web:
+    image: nginx:alpine
+    port: 80
+    primary: true
+    health: {http: /}
+tasks:
+  unit: {run: ["true"], needs: []}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.git("add", "-A")
+	e.git("-c", "user.email=a@t", "-c", "user.name=a", "commit", "-qm", "budget")
+
+	budget := func(args ...string) string {
+		cmd := e.command(args...)
+		cmd.Env = append(cmd.Env, "DEVBAY_MAX_BAYS=2")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("devbay %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+
+	for _, name := range []string{"b1", "b2"} {
+		budget("new", name)
+		t.Cleanup(func() { _, _ = e.try("rm", name, "--force") })
+	}
+	// The oldest is the one the developer is using, so it must survive.
+	budget("focus", "b1")
+
+	budget("new", "b3")
+	t.Cleanup(func() { _, _ = e.try("rm", "b3", "--force") })
+
+	// The state is the third field of the header line `<bay> <alias> <state>
+	// <branch>`, which is what `devbay status` leads with.
+	state := func(bay string) string {
+		for _, line := range strings.Split(e.run("status", bay), "\n") {
+			if f := strings.Fields(line); len(f) >= 3 && f[0] == bay {
+				return f[2]
+			}
+		}
+		return "unknown"
+	}
+	if got := state("b1"); got == "cold" {
+		t.Error("S: the focused bay was stopped to make room, which is the one bay that must not be")
+	}
+	if got := state("b2"); got != "cold" {
+		t.Errorf("S: nothing was cooled for the third bay; b2 is %s, so the budget does not hold", got)
+	}
+	if got := state("b3"); got == "cold" {
+		t.Errorf("S: the new bay did not come up (%s)", got)
+	}
+
+	// Cooling keeps the bay: it is a resting state, not a removal.
+	e.run("thaw", "b2")
+	if code, _ := e.get("b2.budget.localhost", "/"); code != 200 {
+		t.Errorf("S: a bay cooled by the budget did not come back; got %d", code)
+	}
+}

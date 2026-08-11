@@ -40,8 +40,10 @@ const usage = `devbay — parallel, isolated local environments for coding agent
   devbay doctor                            diagnose the environment
   devbay version                           build and toolchain versions
 
-  DEVBAY_EGRESS=1  enforce each service's declared egress allowlist
   devbay mcp                               serve the agent interface on stdio
+
+  DEVBAY_EGRESS=1        enforce each service's declared egress allowlist
+  DEVBAY_MAX_BAYS=5      cool the oldest bay when a new one would exceed this
 `
 
 func main() {

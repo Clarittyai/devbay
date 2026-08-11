@@ -491,6 +491,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Bay, error) 
 	}
 
 	if opts.Boot {
+		// Before this one starts, not after: the point is to stay inside the
+		// budget rather than to exceed it and then recover.
+		m.makeRoom(ctx, opts.Name)
+
 		plan, err := engine.BootPlan(mf)
 		if err != nil {
 			return unwind(err)

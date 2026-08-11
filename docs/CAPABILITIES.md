@@ -81,6 +81,12 @@ it is remembered rather than asked again. A non-human caller cannot grant it.
 **Confines each service's network to what it declares** (`DEVBAY_EGRESS=1`),
 applied inside the container's own namespace, never the host's.
 
+**Keeps the machine inside a budget.** Creating a bay beyond
+`DEVBAY_MAX_BAYS` (five) cools the oldest resident bay of the project rather
+than refusing or letting the machine swap. Cooling, not freezing, because
+`docker pause` stops scheduling and not allocation. The focused bay is never
+the one stopped.
+
 **Reverses itself completely.** `devbay rm` removes containers, volumes,
 networks, built images, the worktree and the port block. A branch carrying
 commits is kept, and it says so.
@@ -88,8 +94,11 @@ commits is kept, and it says so.
 ## What it does not do
 
 **It is not a daemon.** Every command is a short-lived process; there is no
-background scheduler, no automatic eviction under memory pressure, no
-supervision loop. `devbay watch` is a foreground command you leave in a tab.
+background supervision loop and nothing reacting to memory pressure between
+commands. `devbay watch` is a foreground command you leave in a tab. What
+scheduling exists happens when a command runs: creating a bay that would put
+more than five (`DEVBAY_MAX_BAYS`) on the machine cools the oldest one that is
+not focused, and says which.
 
 **It does not run your code anywhere but here.** No cloud, no remote
 environments, no state syncing between machines, no telemetry. This is a
@@ -163,8 +172,9 @@ it.
 
 Stated plainly rather than left to be discovered.
 
-- **No scheduler.** `devbay cool` is manual. Nothing evicts a bay under memory
-  pressure, so five bays is a number you choose, not one devbay enforces.
+- **Nothing reacts between commands.** The resident budget is applied when a
+  bay is created, so five bays left running overnight stay running. There is no
+  process watching, and adding one would make devbay a daemon.
 - **No supervision surface.** `supervision:` parses and does nothing: favicon
   tinting and a staleness banner need a resident process to transform
   responses, and devbay has no daemon. Telling five browser tabs apart relies
