@@ -156,6 +156,12 @@ fills the setting in where the repository says it reads it from the
 environment, and where it cannot, the boot says which setting to change. It is
 the one failure that makes a working bay look broken.
 
+**A health probe asks whether the service is up, not whether a path exists.**
+An HTTP probe treats anything short of a server error as ready, because the
+path is usually one devbay chose rather than read, and an API that serves
+`/users` and nothing at `/` is working. A 5xx is still a failure — that is the
+server saying it cannot serve.
+
 **A published port accepts before the service listens.** Docker's userland
 proxy binds the host port when the container is created, so a plain connect
 probe reports a database ready while it is still running initdb. devbay's
