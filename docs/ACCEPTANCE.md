@@ -48,6 +48,41 @@ the application's business: this example's cache declares no volume, so losing
 its contents when it stops is the cache behaving correctly. An acceptance suite
 that asserted otherwise would be testing redis.
 
+## The corpus check
+
+The scenarios above run against a repository devbay was written for, plus one
+(T) it has never seen. Neither answers the question a developer actually has:
+*will it work on mine?*
+
+That is answered separately, by hand, against real repositories -- the forty
+stacks in [docker/awesome-compose](https://github.com/docker/awesome-compose)
+and a handful of real Procfile applications. Each one is measured against the
+only fair baseline, which is what `docker compose up` does with the same
+repository on the same machine at the same moment:
+
+```sh
+make build
+git clone --depth 1 https://github.com/docker/awesome-compose /tmp/awesome-compose
+for d in /tmp/awesome-compose/*/; do scripts/corpus.sh "$d"; done
+```
+
+Each line is one stack:
+
+```
+<stack> compose=<up|down> devbay=<up-CODE|boot-failed:...|no-serve-CODE>
+```
+
+The baseline matters more than it looks. Several of these stacks do not work
+under compose on an arm64 Mac at all -- an image with no arm64 build, a service
+that races a peer it does not depend on -- and counting those against devbay
+sends the work in the wrong direction. The bar is that **devbay boots what
+compose boots**, and where the two differ it is devbay's job to explain why.
+
+It is not in CI: it needs the network, most of an hour, and tens of gigabytes
+of images. It is what to run before believing a change to `internal/introspect`
+is an improvement, because that package cannot be judged against fixtures
+written by the same person who wrote the package.
+
 ## What it deliberately does not check
 
 Anything under "Known unfinished" in CAPABILITIES.md. Asserting behaviour that
