@@ -42,3 +42,24 @@ func TestTrimVersionMatchesTheRegistry(t *testing.T) {
 		}
 	}
 }
+
+// Two detectors can each conclude a service needs its dependency directory
+// kept out of the bind mount. Docker refuses a container with two mounts at
+// one path, and calls it a duplicate mount point without saying whose.
+func TestTheDependencyDirectoryIsNotAddedTwice(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"package.json":      `{"name":"a","scripts":{"dev":"vite"},"dependencies":{"vite":"5"}}`,
+		"package-lock.json": `{"lockfileVersion":3}`,
+	})
+	res := detect(t, dir)
+
+	seen := map[string]int{}
+	for _, v := range res.Manifest.Services["web"].Volumes {
+		seen[v]++
+	}
+	for path, n := range seen {
+		if n > 1 {
+			t.Errorf("%s appears %d times, so the container cannot be created", path, n)
+		}
+	}
+}

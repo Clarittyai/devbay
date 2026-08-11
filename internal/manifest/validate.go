@@ -266,16 +266,22 @@ func validateService(r *Result, m *Manifest, pat spec.Rules, name string, s *Ser
 	validateArgvFrom(r, pat, at+"/start", s.Start, s.Provided)
 	validateArgvFrom(r, pat, at+"/run", s.Run, s.Provided)
 
+	seenVolume := map[string]bool{}
 	for i, v := range s.Volumes {
 		at := fmt.Sprintf("%s/volumes/%d", at, i)
 		switch {
 		case strings.TrimSpace(v) == "":
 			r.add(Error, "", at, "empty volume path")
+		case seenVolume[v]:
+			// Docker refuses a container with two mounts at one path and calls
+			// it a duplicate mount point, which does not say which two.
+			r.add(Error, "", at, fmt.Sprintf("%q is listed twice; two volumes cannot mount at one path", v))
 		case strings.Contains(v, ".."):
 			// The path names a place inside the container, and a volume
 			// mounted through .. lands somewhere nobody wrote down.
 			r.add(Error, "", at, fmt.Sprintf("%q contains .., so where it mounts depends on where it is read from", v))
 		}
+		seenVolume[v] = true
 	}
 
 	if !s.Restart.Valid() {

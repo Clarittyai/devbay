@@ -101,7 +101,11 @@ func (d *detector) inferToolchain() {
 			// getting it wrong is invisible: pip installs into the throwaway
 			// install container's own filesystem, reports success, and the
 			// service then starts without Django.
-			if dep := dependencyDir(eco); dep != "" {
+			if dep := dependencyDir(eco); dep != "" && !contains(s.Volumes, dep) {
+				// Not appended blindly: another detector may already have put
+				// it there, and two volumes at one path is a container Docker
+				// refuses to create -- reported as "duplicate mount point",
+				// which says nothing about where either of them came from.
 				s.Volumes = append(s.Volumes, dep)
 			}
 			if s.Env == nil {
