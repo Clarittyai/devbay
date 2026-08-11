@@ -25,6 +25,19 @@ environment. `devbay new` and `devbay rm` are the whole lifecycle.
 emits a `devbay.yaml` with a provenance comment for every line and an explicit
 list of what it could not work out. It never silently guesses.
 
+From a compose file it carries over the parts that decide whether the stack
+runs, not just the parts that describe it: `secrets:` become file mounts,
+`command:` becomes an argv array, `restart:` is preserved because compose files
+use it where they cannot express a dependency, and the anonymous volume that
+keeps a bind mount from hiding `node_modules` comes across too.
+
+Without a compose file it infers the toolchain from what the repository
+committed to — `.nvmrc`, `engines.node`, `.python-version`, `go.mod`,
+`.tool-versions` — takes the install command from the lockfile rather than the
+README, and puts the dependencies where both the install and the service can
+see them. Where a repository declares that it reads its allowed-hosts setting
+from the environment, the bay's own hostname is filled in.
+
 **Wires services to each other by reference, not by literal.** A compose file
 says `http://localhost:4000` and `postgres://…@db:5432/app`; both are wrong the
 moment two instances exist. devbay rewrites them to `${bay.api.public_url}` and

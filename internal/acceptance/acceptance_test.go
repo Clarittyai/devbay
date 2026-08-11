@@ -754,3 +754,74 @@ tasks:
 		t.Errorf("S: a bay cooled by the budget did not come back; got %d", code)
 	}
 }
+
+// TestAnUnseenRepositoryJustWorks is scenario T.
+//
+// Every other scenario runs against the shipped example, which devbay was
+// developed against and therefore cannot fail. This one is a repository devbay
+// has never seen, with no compose file and no devbay.yaml -- a Procfile, a
+// package.json and an application -- and the claim is that `init` then `new`
+// is the whole sequence. No human edits, because the promise is that devbay
+// writes the configuration, not that it writes most of it.
+func TestAnUnseenRepositoryJustWorks(t *testing.T) {
+	e := setup(t)
+
+	repo := filepath.Join(t.TempDir(), "unseen")
+	files := map[string]string{
+		"Procfile":     "web: node server.js\n",
+		"package.json": `{"name":"unseen","version":"1.0.0","engines":{"node":">=20"},"scripts":{"test":"node --test"}}`,
+		".nvmrc":       "22\n",
+		// Reads PORT, which is the contract every Procfile platform uses and
+		// the one devbay relies on to know where to route.
+		"server.js": `const http = require('http');
+const port = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, {'Content-Type': 'text/plain'});
+  res.end('unseen repository, bay ' + (process.env.DEVBAY_BAY || '?'));
+}).listen(port, '0.0.0.0');
+`,
+	}
+	for name, body := range files {
+		p := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.repo = repo
+	e.git("init", "-q")
+	e.git("add", "-A")
+	e.git("-c", "user.email=a@t", "-c", "user.name=a", "commit", "-qm", "unseen")
+
+	out := e.run("init")
+	if !strings.Contains(out, "wrote") {
+		t.Fatalf("T: init produced no manifest:\n%s", out)
+	}
+
+	// It has to validate on its own. A manifest the developer must finish is
+	// the state this scenario exists to prevent.
+	if out, err := e.try("validate"); err != nil {
+		t.Fatalf("T: the generated manifest does not validate, so devbay handed back homework:\n%s", out)
+	}
+
+	e.git("add", "-A")
+	e.git("-c", "user.email=a@t", "-c", "user.name=a", "commit", "-qm", "manifest")
+
+	e.run("new", "unseen")
+	t.Cleanup(func() { _, _ = e.try("rm", "unseen", "--force") })
+
+	code, body := e.get("unseen.unseen.localhost", "/")
+	if code != 200 {
+		t.Fatalf("T: the bay does not serve; got %d", code)
+	}
+	if !strings.Contains(body, "bay unseen") {
+		t.Errorf("T: the application answered but not from this bay: %q", body)
+	}
+
+	// And the test command it found actually runs.
+	if out := e.run("run", "unseen", "test"); strings.Contains(out, "fail") {
+		t.Errorf("T: the detected test task did not pass:\n%s", out)
+	}
+}
