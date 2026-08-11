@@ -292,9 +292,10 @@ func TestAServiceThatBuildsFromSourceBoots(t *testing.T) {
 
 func imagesFor(t *testing.T, cli *client.Client, ctx context.Context, project, bay string) []string {
 	t.Helper()
+	_ = bay // images are project-scoped: a content-addressed tag is shared
 	f := make(client.Filters).
-		Add("label", LabelProject+"="+project).
-		Add("label", LabelBay+"="+bay)
+		Add("label", LabelManaged+"=1").
+		Add("label", LabelProject+"="+project)
 	list, err := cli.ImageList(ctx, client.ImageListOptions{All: true, Filters: f})
 	if err != nil {
 		t.Fatalf("listing images: %v", err)

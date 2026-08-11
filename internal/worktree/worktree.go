@@ -61,6 +61,9 @@ type Manager struct {
 	// Root is where devbay creates new worktrees.
 	Root string
 
+	// Log receives notes a developer needs to see. Never nil after Open.
+	Log func(format string, args ...any)
+
 	// Reclaim takes ownership of a worktree back from the containers that
 	// wrote into it, and is called only when removal has already failed for
 	// lack of permission.
@@ -175,6 +178,17 @@ func (m *Manager) Create(opts CreateOptions) (*Worktree, error) {
 	}
 
 	newBranch := !m.branchExists(branch)
+	if !newBranch {
+		// An existing branch is checked out where it is, not recreated from
+		// HEAD. Said out loud because the surprise is otherwise silent and
+		// expensive: destroy a bay, commit a fix, create the bay again with
+		// the same name, and it comes back on the old commit -- the fix
+		// apparently ignored, with nothing on screen to explain it.
+		if sha, err := git(m.RepoRoot, "rev-parse", "--short", branch); err == nil {
+			m.logf("worktree: branch %s already exists; checking it out at %s (delete it or pass --branch for a fresh one)",
+				branch, strings.TrimSpace(sha))
+		}
+	}
 	args := []string{"worktree", "add"}
 	if newBranch {
 		from := opts.From
@@ -506,4 +520,32 @@ func git(dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), msg)
 	}
 	return stdout.String(), nil
+}
+
+// logf reports something worth saying, if anyone is listening.
+func (m *Manager) logf(format string, args ...any) {
+	if m.Log != nil {
+		m.Log(format, args...)
+	}
+}
+
+// BranchHasWork reports whether a branch holds commits that exist nowhere else.
+//
+// The question teardown needs answered: a branch with no unique commits is
+// bookkeeping and can go with the bay, while one carrying work must survive
+// even though the bay does not. Deleting the second kind would be data loss;
+// keeping the first kind is what makes `devbay rm` followed by `devbay new`
+// silently resurrect an old commit.
+func (m *Manager) BranchHasWork(branch string) bool {
+	if branch == "" || !m.branchExists(branch) {
+		return false
+	}
+	// Commits reachable from the branch but from no other ref. If listing
+	// fails, assume there is work: keeping a branch is recoverable, deleting
+	// one is not.
+	out, err := git(m.RepoRoot, "rev-list", "--count", branch, "--not", "--exclude="+branch, "--branches", "--tags", "--remotes")
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(out) != "0"
 }

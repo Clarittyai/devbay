@@ -426,6 +426,28 @@
         },
         "env": {
           "$ref": "#/$defs/env"
+        },
+        "mounts": {
+          "type": "array",
+          "description": "Directories from the repository bound over paths in the container. Needed by the common `target: dev` pattern, where an image builds the source in and the source is bound back over the top so edits are live. Declared rather than inferred: inferring it from the build context is right for interpreted images and wrong for compiled ones, where the same directory holds build output.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "target"
+            ],
+            "properties": {
+              "source": {
+                "type": "string",
+                "description": "Relative to the repository root, and confined to it: a mount source is manifest content, and a manifest may be generated from repository content."
+              },
+              "target": {
+                "type": "string",
+                "description": "Absolute path inside the container. Must not be /."
+              }
+            }
+          }
         }
       },
       "oneOf": [

@@ -165,6 +165,30 @@ func validateService(r *Result, m *Manifest, pat spec.Rules, name string, s *Ser
 			fmt.Sprintf("%q is a floating tag; pin by digest so a bay booted today and one booted next month are the same bay", s.Image))
 	}
 
+	// Mounts. Checked here as well as at spawn time, so a manifest that could
+	// never run is rejected while it is being reviewed rather than while it is
+	// being executed.
+	for i, mt := range s.Mounts {
+		where := fmt.Sprintf("%s/mounts/%d", at, i)
+		switch {
+		case mt.Source == "":
+			r.add(Error, "", where, "source is required")
+		case strings.HasPrefix(mt.Source, "/"):
+			r.add(Error, "", where, "source must be relative to the repository")
+		case mt.Source == ".." || strings.HasPrefix(mt.Source, "../") || strings.Contains(mt.Source, "/../"):
+			r.add(Error, "", where,
+				"source escapes the repository; a mount reaches out of the bay and into the machine")
+		}
+		switch {
+		case mt.Target == "":
+			r.add(Error, "", where, "target is required")
+		case !strings.HasPrefix(mt.Target, "/"):
+			r.add(Error, "", where, "target must be an absolute path inside the container")
+		case mt.Target == "/":
+			r.add(Error, "", where, "target / would replace the container's root filesystem")
+		}
+	}
+
 	// Kind-specific shape. A oneshot's exit code is its probe, so it is exempt
 	// from R5 — and must not pretend to serve traffic.
 	if s.IsOneshot() {

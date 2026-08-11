@@ -134,6 +134,17 @@ type Service struct {
 	Watch       []string    `yaml:"watch,omitempty"`
 	WatchAction WatchAction `yaml:"watch_action,omitempty"`
 
+	// Mounts bind a directory from the repository over a path in the
+	// container.
+	//
+	// Needed by the common `target: dev` pattern, where an image builds the
+	// source in and the source is then bound back over the top so edits are
+	// live. Declared rather than inferred: devbay tried inferring it from the
+	// build context and got it right for interpreted images and wrong for
+	// compiled ones, where the same directory holds build output and mounting
+	// source over it hides the binary.
+	Mounts []Mount `yaml:"mounts,omitempty"`
+
 	// Volumes are paths backed by a named volume rather than the bind mount —
 	// node_modules, .venv, vendor/bundle, target, .next. Not an optimisation
 	// to defer: a bind-mounted dependency tree runs at roughly 2.5x native on
@@ -150,6 +161,14 @@ type Service struct {
 	Egress []string `yaml:"egress,omitempty"`
 
 	Env map[string]string `yaml:"env,omitempty"`
+}
+
+// Mount is a directory from the repository, bound into the container.
+type Mount struct {
+	// Source is relative to the repository root and confined to it.
+	Source string `yaml:"source"`
+	// Target is an absolute path inside the container.
+	Target string `yaml:"target"`
 }
 
 // Build builds an image from the repo instead of pulling one.

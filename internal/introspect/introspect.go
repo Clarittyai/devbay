@@ -152,6 +152,41 @@ func (d *detector) composeBuild(svc composetypes.ServiceConfig) *manifest.Build 
 	return b
 }
 
+// composeMounts transcribes the host bind mounts a compose service declares.
+//
+// Only binds whose source is inside the repository. A named volume is a
+// different construct devbay models separately, and an absolute host path is
+// something the developer has to decide about themselves -- silently binding
+// /var/run/docker.sock, which real compose files do, would hand a bay the
+// daemon and with it the machine.
+func (d *detector) composeMounts(svc composetypes.ServiceConfig) []manifest.Mount {
+	var out []manifest.Mount
+	for _, v := range svc.Volumes {
+		if v.Type != "bind" || v.Source == "" || v.Target == "" || v.Target == "/" {
+			continue
+		}
+		src := v.Source
+		if filepath.IsAbs(src) {
+			r, err := filepath.Rel(d.dir, src)
+			if err != nil || strings.HasPrefix(r, "..") {
+				d.gap("service %q binds %s, which is outside the repository; devbay did not carry it over",
+					svc.Name, v.Source)
+				continue
+			}
+			src = r
+		}
+		src = filepath.ToSlash(filepath.Clean(src))
+		if src == ".." || strings.HasPrefix(src, "../") {
+			continue
+		}
+		if !strings.HasPrefix(src, ".") {
+			src = "./" + src
+		}
+		out = append(out, manifest.Mount{Source: src, Target: v.Target})
+	}
+	return out
+}
+
 func (d *detector) gap(format string, args ...any) {
 	d.res.Gaps = append(d.res.Gaps, fmt.Sprintf(format, args...))
 }
@@ -254,6 +289,14 @@ func (d *detector) fromCompose(ctx context.Context) {
 					s.Env[k] = *v
 				}
 			}
+			if mounts := d.composeMounts(svc); len(mounts) > 0 {
+				s.Mounts = mounts
+				for _, mt := range mounts {
+					d.note(SourceCompose, path,
+						fmt.Sprintf("service %q mounts %s at %s", name, mt.Source, mt.Target))
+				}
+			}
+
 			ports := composePorts(svc)
 			if len(ports) > 0 {
 				s.Port = ports[0]
@@ -269,7 +312,9 @@ func (d *detector) fromCompose(ctx context.Context) {
 				s.Needs = append(s.Needs, slug(dep))
 			}
 			d.m.Services[name] = s
-			d.note(SourceCompose, path, fmt.Sprintf("service %q from image %s", name, s.Image))
+			if s.Build == nil {
+				d.note(SourceCompose, path, fmt.Sprintf("service %q from image %s", name, s.Image))
+			}
 		}
 		if len(project.Services) > 0 {
 			return // the first compose file found wins
@@ -752,13 +797,13 @@ func (d *detector) checkGaps() {
 	}
 	for _, name := range sortedKeysOf(d.m.Services) {
 		s := d.m.Services[name]
-		if s.Image == "" {
-			d.gap("service %q has no image", name)
+		if s.Image == "" && s.Build == nil {
+			d.gap("service %q has neither an image nor a build context", name)
 		}
 		// A stock datastore image starts its own server. Anything else that
 		// was transcribed without a command will run its default entrypoint,
 		// and the first symptom is a health probe that never passes.
-		if !s.IsOneshot() && len(s.Start) == 0 && s.Image != "" && !startable(s.Image) {
+		if !s.IsOneshot() && len(s.Start) == 0 && s.Image != "" && s.Build == nil && !startable(s.Image) {
 			d.gap("service %q has no `start:` command; its image will run its default entrypoint", name)
 		}
 	}

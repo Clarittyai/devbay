@@ -450,3 +450,43 @@ func TestReclaimIsNotUsedForOtherFailures(t *testing.T) {
 		t.Errorf("err = %v, want ErrDirty", err)
 	}
 }
+
+// Destroying a bay and creating one with the same name used to come back on
+// the old commit: `git worktree remove` leaves the branch, so the next create
+// checked out a branch still pointing where it did before, and the fix the
+// developer had just committed appeared to be ignored with nothing on screen
+// to explain it.
+func TestABranchWithNoWorkOfItsOwnIsNotWork(t *testing.T) {
+	repo := newRepo(t)
+	m := manager(t, repo)
+
+	if _, err := m.Create(CreateOptions{Name: "clean"}); err != nil {
+		t.Fatal(err)
+	}
+	if m.BranchHasWork("clean") {
+		t.Error("a branch created from HEAD with no commits was reported as holding work")
+	}
+}
+
+// The other half: a branch that does carry commits must survive teardown,
+// because deleting it is the one mistake that cannot be undone.
+func TestABranchCarryingCommitsIsWork(t *testing.T) {
+	repo := newRepo(t)
+	m := manager(t, repo)
+
+	wt, err := m.Create(CreateOptions{Name: "busy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "change.txt"), []byte("work"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "-A"}, {"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "work"}} {
+		if _, err := git(wt.Path, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !m.BranchHasWork("busy") {
+		t.Error("a branch holding a commit was reported as safe to delete")
+	}
+}

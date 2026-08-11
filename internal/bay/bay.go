@@ -130,6 +130,7 @@ func Open(ctx context.Context, opts Options) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	wt.Log = logf
 	alloc, err := ports.Open(opts.StatePath)
 	if err != nil {
 		return nil, err
@@ -592,8 +593,22 @@ func (m *Manager) Destroy(ctx context.Context, name string, force bool) error {
 	// created it first -- so devbay leaves it alone. Removing it would delete
 	// work devbay never created.
 	if !b.Adopted {
+		// Checked before the worktree goes, while the branch is still
+		// meaningful.
+		hasWork := m.wt.BranchHasWork(b.Branch)
 		if err := m.wt.Remove(b.Branch, force); err != nil {
 			errs = append(errs, err)
+		} else if !hasWork {
+			// A branch with no commits of its own is bookkeeping, and keeping
+			// it makes `devbay rm` followed by `devbay new` come back on the
+			// old commit -- the fix you just committed apparently ignored.
+			// A branch that does carry work is kept, and said so.
+			if err := m.wt.DeleteBranch(b.Branch); err != nil {
+				m.Log("bay: could not delete branch %s: %v", b.Branch, err)
+			}
+		} else {
+			m.Log("bay: branch %s has commits, so it was kept; `git branch -D %s` to discard them",
+				b.Branch, b.Branch)
 		}
 		// The per-project directory that held it goes too, once empty. Left
 		// behind, these accumulate one per repository ever used and make

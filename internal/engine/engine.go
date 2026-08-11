@@ -449,9 +449,40 @@ func (e *Engine) create(ctx context.Context, name string, s *manifest.Service, c
 	}
 	sort.Strings(envList)
 
+	// A pulled image is a runtime -- node:22, python:3.12 -- and the code it
+	// runs is the worktree, so the working directory is where the worktree is
+	// mounted. An image built from this repository is the opposite: the code
+	// is already inside it, and the image's own WORKDIR and ENTRYPOINT are the
+	// ones that know where it went. Overriding those pointed every built
+	// service at an empty directory and produced the confusing pair of errors
+	// "cannot find module /workspace/server.js" and "can't open file
+	// /workspace/app.py" from images that were built perfectly well.
+	//
+	// The worktree is still mounted, so editing a file on the host is still
+	// visible; the image simply decides where it starts.
 	workdir := s.Workdir
-	if workdir == "" {
+	if workdir == "" && s.Build == nil {
 		workdir = WorkspaceDir
+	}
+
+	// Dependency volumes are declared relative to wherever the application
+	// lives, so they need a concrete base even when the working directory is
+	// left to the image. Asking the image is the only way to know: a built
+	// image put the code somewhere of its own choosing.
+	volumeBase := workdir
+	binds := []string{e.worktree + ":" + WorkspaceDir}
+	if volumeBase == "" {
+		volumeBase = e.imageWorkdir(ctx, s.Image)
+
+	}
+
+	// Bind mounts the manifest declares, confined to the worktree.
+	for _, mt := range s.Mounts {
+		src, err := e.mountSource(mt.Source)
+		if err != nil {
+			return "", err
+		}
+		binds = append(binds, src+":"+mt.Target)
 	}
 
 	exposed := network.PortSet{}
@@ -492,7 +523,7 @@ func (e *Engine) create(ctx context.Context, name string, s *manifest.Service, c
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeVolume,
 			Source: vol,
-			Target: workdir + "/" + strings.Trim(rel, "/"),
+			Target: volumeBase + "/" + strings.Trim(rel, "/"),
 		})
 	}
 
@@ -507,7 +538,7 @@ func (e *Engine) create(ctx context.Context, name string, s *manifest.Service, c
 			ExposedPorts: exposed,
 		},
 		HostConfig: &container.HostConfig{
-			Binds:        []string{e.worktree + ":" + WorkspaceDir},
+			Binds:        binds,
 			Mounts:       mounts,
 			PortBindings: bindings,
 		},

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/client"
 
 	"github.com/Clarittyai/devbay/internal/manifest"
@@ -69,11 +70,16 @@ func (e *Engine) buildImage(ctx context.Context, name string, s *manifest.Servic
 		Dockerfile: dockerfile,
 		Target:     s.Build.Target,
 		Remove:     true,
-		// Labelled so teardown can find it. An image built for a bay that no
-		// longer exists is exactly the kind of thing that accumulates
-		// invisibly until a machine runs out of disk -- which is not a
-		// hypothetical, it is how the first build test on this machine failed.
-		Labels: e.labels(name),
+		Version:    build.BuilderBuildKit,
+		// Labelled for teardown, but with the project rather than the bay.
+		// The tag is content-addressed, so two bays on the same commit resolve
+		// to one image and only the first of them actually builds it -- label
+		// it with that bay and the second bay's teardown does not recognise
+		// its own image, while the first bay's teardown cannot remove it
+		// because the second is still running. The image then survives both,
+		// which is exactly what happened: three images left behind by a pair
+		// of bays that had otherwise torn down cleanly.
+		Labels: e.imageLabels(name),
 	})
 	if err != nil {
 		return "", fmt.Errorf("build: %w", err)
@@ -153,9 +159,15 @@ func (e *Engine) haveImage(ctx context.Context, tag string) (bool, error) {
 // creates: leaving them behind would fill a disk far faster than any container
 // or volume.
 func (e *Engine) removeBuiltImages(ctx context.Context) error {
+	// Project-scoped, matching how they are labelled. Docker refuses to remove
+	// an image another bay's containers are still using, and that refusal is
+	// correct -- so each teardown removes what it can and the last one to go
+	// takes the rest.
 	list, err := e.cli.ImageList(ctx, client.ImageListOptions{
-		All:     true,
-		Filters: e.filter(),
+		All: true,
+		Filters: make(client.Filters).
+			Add("label", LabelManaged+"=1").
+			Add("label", LabelProject+"="+e.m.Project),
 	})
 	if err != nil {
 		return err
@@ -391,4 +403,62 @@ func rel(base, path string) string {
 		return "./" + filepath.ToSlash(r)
 	}
 	return path
+}
+
+// imageWorkdir reports the working directory an image declares.
+//
+// Needed because devbay leaves a built image's WORKDIR alone -- the image knows
+// where its own code went -- while dependency volumes are still declared
+// relative to that directory. Falling back to the workspace mount keeps the
+// behaviour identical to a pulled image when the image says nothing.
+func (e *Engine) imageWorkdir(ctx context.Context, image string) string {
+	if image == "" {
+		return WorkspaceDir
+	}
+	insp, err := e.cli.ImageInspect(ctx, image)
+	if err != nil || insp.Config == nil || insp.Config.WorkingDir == "" {
+		return WorkspaceDir
+	}
+	return strings.TrimRight(insp.Config.WorkingDir, "/")
+}
+
+// mountSource resolves a declared mount and confines it to the worktree.
+//
+// Same boundary as a build context, and for the same reason: a mount source is
+// manifest content, a manifest may be generated from repository content, and
+// `source: ../../..` would hand the container whatever sits above the checkout.
+func (e *Engine) mountSource(source string) (string, error) {
+	if source == "" {
+		return "", fmt.Errorf("mount: source is required")
+	}
+	if filepath.IsAbs(filepath.FromSlash(source)) {
+		return "", fmt.Errorf("mount: source %q must be relative to the repository", source)
+	}
+	root, err := filepath.Abs(filepath.Join(e.worktree, filepath.FromSlash(source)))
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	base := e.worktree
+	if resolved, err := filepath.EvalSymlinks(base); err == nil {
+		base = resolved
+	}
+	if root != base && !strings.HasPrefix(root, base+string(filepath.Separator)) {
+		return "", fmt.Errorf("mount: source %q escapes the worktree", source)
+	}
+	if _, err := os.Stat(root); err != nil {
+		return "", fmt.Errorf("mount: source %s does not exist", rel(e.worktree, root))
+	}
+	return root, nil
+}
+
+// imageLabels marks a built image as devbay's, without tying it to one bay.
+func (e *Engine) imageLabels(service string) map[string]string {
+	return map[string]string{
+		LabelManaged: "1",
+		LabelProject: e.m.Project,
+		LabelService: service,
+	}
 }
