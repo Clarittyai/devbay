@@ -60,6 +60,23 @@ type Manager struct {
 	RepoRoot string
 	// Root is where devbay creates new worktrees.
 	Root string
+
+	// Reclaim takes ownership of a worktree back from the containers that
+	// wrote into it, and is called only when removal has already failed for
+	// lack of permission.
+	//
+	// A container writing into the bind-mounted worktree writes as whatever
+	// user it runs as, which for most images is root. On Linux that ownership
+	// is the host's ownership -- there is no mapping layer -- so a build
+	// artefact, a lockfile, or a test report left behind by a container is a
+	// root-owned file the developer cannot delete, and `devbay rm` fails
+	// having already destroyed the containers. On macOS the file sharing layer
+	// maps ownership to the calling user and this never happens, which is
+	// exactly why it went unnoticed until CI ran on Linux.
+	//
+	// A function rather than a direct call because this package deliberately
+	// knows nothing about containers; the caller supplies the means.
+	Reclaim func(path string) error
 }
 
 // ErrDirty is returned when removing a worktree would discard uncommitted work.
@@ -200,6 +217,19 @@ func (m *Manager) Create(opts CreateOptions) (*Worktree, error) {
 	return wt, nil
 }
 
+// isPermission reports whether git failed because it could not delete a file.
+//
+// Matched on the message because git reports this as a plain exit status: the
+// detail only exists in the text it printed ("failed to delete '<path>':
+// Permission denied"), so there is no error value to compare against.
+func isPermission(err error) bool {
+	if errors.Is(err, fs.ErrPermission) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "permission denied") || strings.Contains(s, "operation not permitted")
+}
+
 // DeleteBranch removes a branch, used when unwinding a failed creation.
 //
 // git worktree remove takes the checkout away but leaves the branch, so
@@ -249,7 +279,27 @@ func (m *Manager) Remove(branch string, force bool) error {
 	}
 	args = append(args, wt.Path)
 	if _, err := git(m.RepoRoot, args...); err != nil {
-		return fmt.Errorf("worktree: removing %s: %w", wt.Path, err)
+		// Teardown is a promise, so a failure that is recoverable is recovered
+		// rather than reported. Retried once, only on a permission error, and
+		// only when the caller gave us a way: silently retrying anything else
+		// would turn "your worktree has uncommitted work" into a hang.
+		if !isPermission(err) || m.Reclaim == nil {
+			return fmt.Errorf("worktree: removing %s: %w", wt.Path, err)
+		}
+		if rerr := m.Reclaim(wt.Path); rerr != nil {
+			return fmt.Errorf("worktree: removing %s: %w (reclaiming ownership also failed: %v)", wt.Path, err, rerr)
+		}
+		// `git worktree remove` is not idempotent after a partial failure: it
+		// deletes what it can first, including the metadata that makes the
+		// directory a worktree, so the obvious retry reports "is not a working
+		// tree" and the real problem disappears behind a confusing message.
+		// Finish the job directly, and let the prune below reconcile git's
+		// records with what is actually on disk.
+		if _, err := git(m.RepoRoot, args...); err != nil {
+			if rmErr := os.RemoveAll(wt.Path); rmErr != nil {
+				return fmt.Errorf("worktree: removing %s after reclaiming ownership: %w", wt.Path, rmErr)
+			}
+		}
 	}
 	// Without prune, a worktree whose directory vanished stays in git's
 	// metadata and blocks re-checkout of the same branch later.

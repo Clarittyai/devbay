@@ -352,3 +352,101 @@ func TestOpenRejectsNonRepository(t *testing.T) {
 		t.Fatal("Open on a non-repository should fail")
 	}
 }
+
+// A container that wrote into the bind-mounted worktree leaves files this
+// process cannot delete, and teardown then fails having already destroyed the
+// containers -- half a teardown, with a worktree nothing can remove. macOS
+// maps ownership and never shows this; Linux does not, so CI found it.
+//
+// Simulated here by removing write permission from the directory holding a
+// file, which is what makes the unlink fail, rather than by needing root.
+func undeletable(t *testing.T, dir string) string {
+	t.Helper()
+	sub := filepath.Join(dir, "buildoutput")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "artifact"), []byte("root wrote this"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sub, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	// Restored unconditionally, or the test's own cleanup cannot remove it.
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
+	return sub
+}
+
+func TestRemoveReclaimsOwnershipWhenDeletionIsDenied(t *testing.T) {
+	repo := newRepo(t)
+	m := manager(t, repo)
+
+	wt, err := m.Create(CreateOptions{Name: "reclaim"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := undeletable(t, wt.Path)
+
+	called := 0
+	m.Reclaim = func(path string) error {
+		called++
+		if path != wt.Path {
+			t.Errorf("reclaim got %s, want the worktree %s", path, wt.Path)
+		}
+		return os.Chmod(sub, 0o755)
+	}
+
+	if err := m.Remove("reclaim", true); err != nil {
+		t.Fatalf("removal did not recover: %v", err)
+	}
+	if called != 1 {
+		t.Errorf("reclaim called %d times, want exactly 1", called)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Error("the worktree is still on disk")
+	}
+}
+
+// Without a way to reclaim, the failure is reported rather than swallowed:
+// silently leaving a worktree behind is the outcome this whole path exists to
+// prevent.
+func TestRemoveReportsADeniedDeletionWhenItCannotReclaim(t *testing.T) {
+	repo := newRepo(t)
+	m := manager(t, repo)
+
+	wt, err := m.Create(CreateOptions{Name: "denied"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	undeletable(t, wt.Path)
+
+	err = m.Remove("denied", true)
+	if err == nil {
+		t.Fatal("removal reported success while the worktree is still on disk")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "permission denied") {
+		t.Errorf("the reason is not actionable: %v", err)
+	}
+}
+
+// Retrying anything else would turn "you have uncommitted work" into a loop
+// through a container that cannot help.
+func TestReclaimIsNotUsedForOtherFailures(t *testing.T) {
+	repo := newRepo(t)
+	m := manager(t, repo)
+
+	if _, err := m.Create(CreateOptions{Name: "dirty"}); err != nil {
+		t.Fatal(err)
+	}
+	m.Reclaim = func(string) error {
+		t.Error("reclaim was called for a failure that has nothing to do with permissions")
+		return nil
+	}
+	wt, _, _ := m.Find("dirty")
+	if err := os.WriteFile(filepath.Join(wt.Path, "new.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Remove("dirty", false); !errors.Is(err, ErrDirty) {
+		t.Errorf("err = %v, want ErrDirty", err)
+	}
+}

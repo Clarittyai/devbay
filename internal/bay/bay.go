@@ -164,6 +164,14 @@ func Open(ctx context.Context, opts Options) (*Manager, error) {
 		Log:      logf,
 	}
 
+	// Teardown must not be defeated by a container having written root-owned
+	// files into the worktree, which on Linux is what most images do. The
+	// worktree package knows nothing about containers, so it is handed the
+	// means rather than the mechanism.
+	wt.Reclaim = func(path string) error {
+		return m.reclaimOwnership(ctx, path)
+	}
+
 	// The broker resolves ${secret:...} and owns the lifetime of anything it
 	// mints. Sources are consulted most-specific first.
 	audit, err := broker.OpenAudit(opts.AuditPath)
