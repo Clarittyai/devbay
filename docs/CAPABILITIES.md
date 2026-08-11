@@ -175,10 +175,12 @@ Stated plainly rather than left to be discovered.
 - **Nothing reacts between commands.** The resident budget is applied when a
   bay is created, so five bays left running overnight stay running. There is no
   process watching, and adding one would make devbay a daemon.
-- **No supervision surface.** `supervision:` parses and does nothing: favicon
-  tinting and a staleness banner need a resident process to transform
-  responses, and devbay has no daemon. Telling five browser tabs apart relies
-  on the page itself, which is why every container is given `DEVBAY_BAY`.
+- **No supervision surface.** `supervision:` is refused rather than ignored.
+  Favicon tinting and a staleness banner need the proxy to transform
+  responses, which means shipping a custom Caddy build rather than configuring
+  a stock one -- a distribution burden that has not earned itself yet. Telling
+  five browser tabs apart relies on the page, which is why every container is
+  given `DEVBAY_BAY`.
 - **Services cannot be shared between bays.** `scope: shared` is refused rather
   than ignored, and `fork:` — which only means anything for a shared service —
   is reported as inert. Every service runs once per bay.

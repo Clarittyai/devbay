@@ -54,7 +54,7 @@
     "supervision": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Controls the per-bay identity surface injected by the proxy.",
+      "description": "NOT IMPLEMENTED. The validator refuses this key. Per-bay identity in the browser needs the proxy to transform responses -- compositing a favicon, injecting a banner -- and devbay configures a stock Caddy over its admin API rather than shipping a custom build. Every container is given DEVBAY_BAY so the page can identify itself.",
       "properties": {
         "banner": {
           "type": "boolean",

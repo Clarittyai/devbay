@@ -601,3 +601,17 @@ tasks:
 		})
 	}
 }
+
+// A field that parses and does nothing is the defect this project keeps
+// finding; supervision: was the last one.
+func TestSupervisionIsRefusedRatherThanIgnored(t *testing.T) {
+	m := load(t, "gitea")
+	m.Supervision = &Supervision{}
+	r := Validate(m)
+	if r.OK() {
+		t.Fatal("supervision: was accepted, so a developer would write it and get nothing")
+	}
+	if !strings.Contains(r.Err().Error(), "not implemented") {
+		t.Errorf("the refusal did not say why: %v", r.Err())
+	}
+}

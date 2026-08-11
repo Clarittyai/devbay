@@ -132,6 +132,18 @@ func Validate(m *Manifest) *Result {
 		r.add(Error, "", "services", "a manifest with no services cannot boot anything")
 	}
 
+	// R6 in spirit: a field that parses and does nothing is worse than one that
+	// does not exist, because the developer writes it, devbay accepts it, and
+	// the bay behaves as though it were absent. Telling five browser tabs
+	// apart needs the proxy to transform responses -- compositing a favicon,
+	// injecting a banner -- and devbay runs a stock Caddy it configures over
+	// an API. Saying so is the only honest option left.
+	if m.Supervision != nil {
+		r.add(Error, "", "supervision",
+			"supervision: is not implemented -- devbay configures a stock proxy and cannot transform responses. "+
+				"Remove it; every container is given DEVBAY_BAY so the page can identify itself")
+	}
+
 	for _, name := range sortedKeys(m.Services) {
 		validateService(r, m, pat, name, m.Services[name])
 	}
