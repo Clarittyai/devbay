@@ -8,6 +8,8 @@
 
 Status: working end to end. `devbay init` proposes a manifest, bays boot with their own hostname and browser origin, tasks return typed failures, and teardown leaves nothing behind. Driven by a CLI or by an agent over MCP.
 
+Checked against forty real compose stacks and a set of real Procfile applications — each one compared with what `docker compose up` does with the same repository on the same machine, because that is the only baseline worth measuring against. See [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md#the-corpus-check); `scripts/corpus.sh` runs it.
+
 ---
 
 **What it does and does not do:** [docs/CAPABILITIES.md](docs/CAPABILITIES.md)
