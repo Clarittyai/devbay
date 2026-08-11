@@ -68,6 +68,24 @@ func (e *Engine) publishRoutes(ctx context.Context) error {
 	return nil
 }
 
+// Republish re-joins the proxy to this bay's network and re-announces its
+// routes.
+//
+// For the case where the proxy container is newer than the bay: a machine
+// restart, a `docker rm`, an upgrade. The bay is still running and still
+// answers on its published ports, but the proxy that knew how to reach it is
+// gone, so the hostname a developer has bookmarked would 404 with no way back
+// short of recreating the bay.
+func (e *Engine) Republish(ctx context.Context) error {
+	if e.prox == nil {
+		return nil
+	}
+	if err := e.attachProxy(ctx); err != nil {
+		return err
+	}
+	return e.publishRoutes(ctx)
+}
+
 // attachProxy joins the proxy to this bay's network.
 func (e *Engine) attachProxy(ctx context.Context) error {
 	if e.prox == nil {

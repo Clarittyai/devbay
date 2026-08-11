@@ -121,6 +121,10 @@ func (p *Proxy) Ensure(ctx context.Context, httpPort, adminPort int) error {
 		httpPort, adminPort := p.publishedPorts(ctx, id)
 		if running && adminPort == p.adminPort {
 			p.HTTPPort = httpPort
+			// Continue from what this proxy is actually serving. Pushing this
+			// process's empty table instead would take every running bay off
+			// the air.
+			p.adoptRoutes(ctx)
 			return p.syncRoutes(ctx)
 		}
 		if running {
@@ -359,6 +363,86 @@ func (p *Proxy) Routes() []Route {
 	return out
 }
 
+// routeIDPrefix marks a Caddy route as devbay's, and carries its owner.
+const routeIDPrefix = "devbay:"
+
+func routeID(r Route) string {
+	return routeIDPrefix + r.Project + ":" + r.Bay + ":" + r.Host
+}
+
+// adoptRoutes reads the routing table back out of a proxy that is already
+// running, so this process continues from what is actually being served.
+//
+// This is the difference between a table that survives and one that does not.
+// devbay is a short-lived CLI: every command starts with an empty map, and
+// every command that touches the proxy pushes its whole table in one atomic
+// load. Without reading first, `devbay ls` -- which publishes nothing -- would
+// load a config containing nothing, and every running bay would stop answering
+// on its hostname. It did exactly that: three bays up, three URLs listed, all
+// three 404, and the tool that broke them was the one that printed them.
+//
+// A failure here is not fatal. The worst case is the old behaviour for one
+// command, and refusing to start because a route could not be parsed would be
+// a far bigger outage than the routes themselves.
+func (p *Proxy) adoptRoutes(ctx context.Context) {
+	if p.adminPort == 0 {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d/config/apps/http/servers/devbay/routes", p.adminPort), nil)
+	if err != nil {
+		return
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return // a proxy with no config yet, which is the fresh-container case
+	}
+
+	var raw []struct {
+		ID    string `json:"@id"`
+		Match []struct {
+			Host []string `json:"host"`
+		} `json:"match"`
+		Handle []struct {
+			Upstreams []struct {
+				Dial string `json:"dial"`
+			} `json:"upstreams"`
+		} `json:"handle"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&raw); err != nil {
+		return
+	}
+
+	for _, e := range raw {
+		// The catch-all has no id and no match, and is regenerated every time.
+		owner, ok := strings.CutPrefix(e.ID, routeIDPrefix)
+		if !ok || len(e.Match) == 0 || len(e.Match[0].Host) == 0 {
+			continue
+		}
+		project, rest, ok := strings.Cut(owner, ":")
+		if !ok {
+			continue
+		}
+		bay, _, ok := strings.Cut(rest, ":")
+		if !ok {
+			continue
+		}
+		var upstream string
+		if len(e.Handle) > 0 && len(e.Handle[0].Upstreams) > 0 {
+			upstream = e.Handle[0].Upstreams[0].Dial
+		}
+		if upstream == "" {
+			continue
+		}
+		host := e.Match[0].Host[0]
+		p.routes[host] = Route{Host: host, Upstream: upstream, Project: project, Bay: bay}
+	}
+}
+
 // syncRoutes pushes the whole routing table to Caddy in one atomic load.
 func (p *Proxy) syncRoutes(ctx context.Context) error {
 	if p.adminPort == 0 {
@@ -392,6 +476,13 @@ func (p *Proxy) caddyConfig() map[string]any {
 	routes := make([]any, 0, len(p.routes))
 	for _, r := range p.Routes() {
 		routes = append(routes, map[string]any{
+			// The owner is written into the config itself. The proxy container
+			// outlives the process that configured it -- devbay is a
+			// short-lived CLI, and the next invocation is a different process
+			// with an empty table -- so the running proxy has to be able to
+			// say who each route belongs to. Without this, adopting a proxy
+			// meant adopting a table with no owners, which cannot be merged.
+			"@id":   routeID(r),
 			"match": []any{map[string]any{"host": []string{r.Host}}},
 			"handle": []any{map[string]any{
 				"handler":   "reverse_proxy",

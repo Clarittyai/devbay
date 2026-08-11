@@ -366,3 +366,112 @@ func countHosts(jar *cookiejar.Jar) int {
 	}
 	return n
 }
+
+// The bug this guards: devbay is a short-lived CLI, so every command starts
+// with an empty routing table and every command that touches the proxy pushes
+// its whole table in one atomic load. A second process that published nothing
+// -- `devbay ls`, `devbay status` -- therefore loaded a config containing
+// nothing, and every running bay stopped answering on its hostname.
+//
+// Three bays up, three URLs listed, all three 404, and the command that broke
+// them was the one that printed them. So a new process must continue from what
+// the running proxy is actually serving.
+func TestASecondProcessDoesNotWipeTheRoutingTable(t *testing.T) {
+	cli := dockerOrSkip(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	const (
+		httpPort  = 18082
+		adminPort = 12021
+	)
+
+	// The first process publishes two bays.
+	first := New(cli, func(f string, a ...any) { t.Logf("first: "+f, a...) })
+	t.Cleanup(func() {
+		c, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_ = first.Stop(c)
+	})
+	if err := first.Ensure(ctx, httpPort, adminPort); err != nil {
+		t.Fatalf("starting proxy: %v", err)
+	}
+	for _, bay := range []string{"alpha", "beta"} {
+		if err := first.SetRoutes(ctx, "acme", bay, []Route{{
+			Host: bay + ".acme.localhost", Upstream: "app:80",
+		}}); err != nil {
+			t.Fatalf("publishing %s: %v", bay, err)
+		}
+	}
+
+	// A second process, exactly as a separate `devbay` invocation would be:
+	// same container, brand-new empty table.
+	second := New(cli, func(f string, a ...any) { t.Logf("second: "+f, a...) })
+	if err := second.Ensure(ctx, httpPort, adminPort); err != nil {
+		t.Fatalf("second process could not adopt the proxy: %v", err)
+	}
+
+	got := map[string]string{}
+	for _, r := range second.Routes() {
+		got[r.Host] = r.Bay
+	}
+	for _, bay := range []string{"alpha", "beta"} {
+		if got[bay+".acme.localhost"] != bay {
+			t.Errorf("%s was lost when a second process adopted the proxy; table is %v", bay, got)
+		}
+	}
+
+	// And it is still true of what Caddy is serving, not merely of the map.
+	hosts := liveHosts(t, ctx, adminPort)
+	for _, bay := range []string{"alpha", "beta"} {
+		if !hosts[bay+".acme.localhost"] {
+			t.Errorf("%s is no longer served; Caddy holds %v", bay, hosts)
+		}
+	}
+
+	// The point of carrying owners across processes: the second process can
+	// still replace one bay without disturbing the other.
+	if err := second.ClearRoutes(ctx, "acme", "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	hosts = liveHosts(t, ctx, adminPort)
+	if hosts["alpha.acme.localhost"] {
+		t.Error("alpha was cleared but is still served")
+	}
+	if !hosts["beta.acme.localhost"] {
+		t.Error("clearing alpha took beta down with it")
+	}
+}
+
+// liveHosts reads back the hostnames the proxy is actually serving.
+func liveHosts(t *testing.T, ctx context.Context, adminPort int) map[string]bool {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d/config/apps/http/servers/devbay/routes", adminPort), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("reading the live config: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var raw []struct {
+		Match []struct {
+			Host []string `json:"host"`
+		} `json:"match"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decoding the live config: %v", err)
+	}
+	out := map[string]bool{}
+	for _, e := range raw {
+		for _, m := range e.Match {
+			for _, h := range m.Host {
+				out[h] = true
+			}
+		}
+	}
+	return out
+}

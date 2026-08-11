@@ -260,7 +260,43 @@ func (m *Manager) rehydrate(ctx context.Context) error {
 			Manifest: mf, Engine: eng,
 		}
 	}
+
+	m.republishOrphanedRoutes(ctx)
 	return errors.Join(errs...)
+}
+
+// republishOrphanedRoutes restores hostnames for bays the proxy has forgotten.
+//
+// The proxy normally carries its own table across invocations, so this does
+// nothing. It matters when the proxy container is newer than the bays -- a
+// machine restart, a `docker rm`, an upgrade -- where the bays are still
+// running and still reachable on their ports, but the hostname a developer has
+// bookmarked answers 404 with no obvious way back.
+//
+// Deliberately conditional on the table being empty. Republishing on every
+// command would be a config load per bay per invocation, and would fight with
+// whatever the current command is about to publish.
+func (m *Manager) republishOrphanedRoutes(ctx context.Context) {
+	if m.prox == nil || len(m.bays) == 0 || len(m.prox.Routes()) > 0 {
+		return
+	}
+	restored := 0
+	for _, b := range m.bays {
+		if b.Engine == nil {
+			continue
+		}
+		if st, err := b.Engine.State(ctx); err != nil || st == engine.StateCold {
+			continue // nothing is listening, so a route would point at nothing
+		}
+		if err := b.Engine.Republish(ctx); err != nil {
+			m.Log("bay: could not restore routes for %s: %v", b.Name, err)
+			continue
+		}
+		restored++
+	}
+	if restored > 0 {
+		m.Log("bay: restored hostnames for %d bay(s) after a proxy restart", restored)
+	}
 }
 
 // warnManifestDrift reports when the working copy's manifest differs from the
@@ -369,7 +405,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Bay, error) 
 		return nil, cause
 	}
 
-	mf, err := loadManifest(wt.Path)
+	mf, err := loadManifestFor(wt.Path, m.RepoRoot)
 	if err != nil {
 		return unwind(err)
 	}
@@ -559,6 +595,12 @@ func (m *Manager) Destroy(ctx context.Context, name string, force bool) error {
 		if err := m.wt.Remove(b.Branch, force); err != nil {
 			errs = append(errs, err)
 		}
+		// The per-project directory that held it goes too, once empty. Left
+		// behind, these accumulate one per repository ever used and make
+		// ~/.devbay look like it is still holding something.
+		if dir := filepath.Dir(b.Worktree); dir != "" && dir != string(filepath.Separator) {
+			_ = os.Remove(dir) // fails harmlessly while other bays remain
+		}
 	}
 
 	// The record goes last. If an earlier step failed, the bay is still known
@@ -658,10 +700,32 @@ func (m *Manager) SetSecret(ref, value string) { m.secrets.Set(ref, value) }
 var ManifestNames = []string{"devbay.yaml", "devbay.yml"}
 
 func loadManifest(dir string) (*manifest.Manifest, error) {
+	return loadManifestFor(dir, "")
+}
+
+// loadManifestFor reads a bay's manifest, and explains the usual reason it is
+// missing.
+//
+// A bay is a fresh checkout of a branch, so it contains what is committed and
+// nothing else. The common failure is therefore not a missing file but an
+// uncommitted one: `devbay init` wrote devbay.yaml, the developer went
+// straight to `devbay new`, and the worktree does not have it. Telling them to
+// run `devbay init` -- which they just did -- sends them round the loop again.
+func loadManifestFor(dir, repoRoot string) (*manifest.Manifest, error) {
 	for _, name := range ManifestNames {
 		p := filepath.Join(dir, name)
 		if _, err := os.Stat(p); err == nil {
 			return manifest.Load(p)
+		}
+	}
+	if repoRoot != "" {
+		for _, name := range ManifestNames {
+			if _, err := os.Stat(filepath.Join(repoRoot, name)); err == nil {
+				return nil, fmt.Errorf(
+					"bay: %s exists in your checkout but is not committed, so this bay's branch does not have it.\n"+
+						"      A bay is a fresh checkout, so commit it first:\n"+
+						"        git add %s && git commit -m \"add devbay.yaml\"", name, name)
+			}
 		}
 	}
 	return nil, fmt.Errorf("bay: no devbay.yaml in %s; run `devbay init` to generate one", dir)
