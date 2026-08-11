@@ -14,6 +14,8 @@
 // manifest to arbitrary shell.
 package manifest
 
+import "gopkg.in/yaml.v3"
+
 // Argv is a command as an argument vector.
 //
 // R1. Declared as a slice so that a YAML string fails to decode structurally
@@ -155,6 +157,36 @@ type Build struct {
 	Context    string `yaml:"context,omitempty"`
 	Dockerfile string `yaml:"dockerfile,omitempty"`
 	Target     string `yaml:"target,omitempty"`
+}
+
+// UnmarshalYAML accepts `build: ./dir` as well as the full mapping.
+//
+// The shorthand is what Compose uses and therefore what people write, what
+// every example they have seen uses, and what devbay's own `init` suggests
+// when it finds a service that builds from source. Rejecting it produced the
+// worst kind of error: a type-mismatch message that blamed R1, the rule about
+// commands being argv arrays, for a field that has nothing to do with
+// commands.
+//
+// Accepting a scalar here does not weaken anything. Unlike a command, a
+// context path is not executed, and it is confined to the worktree before use.
+func (b *Build) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		var dir string
+		if err := value.Decode(&dir); err != nil {
+			return err
+		}
+		b.Context = dir
+		return nil
+	}
+	// A named type, so decoding the mapping does not recurse into this method.
+	type raw Build
+	var out raw
+	if err := value.Decode(&out); err != nil {
+		return err
+	}
+	*b = Build(out)
+	return nil
 }
 
 // Seed defines the state captured into a service's image for ForkImage.

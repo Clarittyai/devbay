@@ -302,7 +302,7 @@ func (e *Engine) bring(ctx context.Context, step Step) error {
 		return nil
 	}
 
-	if err := e.ensureImage(ctx, s); err != nil {
+	if err := e.ensureImage(ctx, name, s); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 
@@ -688,9 +688,21 @@ func (e *Engine) ensureVolume(ctx context.Context, service, name string) error {
 	return nil
 }
 
-func (e *Engine) ensureImage(ctx context.Context, s *manifest.Service) error {
+func (e *Engine) ensureImage(ctx context.Context, name string, s *manifest.Service) error {
+	// A service either names an image or builds one; the schema makes the two
+	// mutually exclusive, so this is the whole decision.
+	if s.Build != nil {
+		tag, err := e.buildImage(ctx, name, s)
+		if err != nil {
+			return err
+		}
+		// Recorded on the parsed manifest so every later reference -- container
+		// create, restart, the plan -- names the image that was actually built.
+		s.Image = tag
+		return nil
+	}
 	if s.Image == "" {
-		return errors.New("build: is not implemented yet; use image:")
+		return errors.New("a service must set either image: or build:")
 	}
 	found, err := e.cli.ImageList(ctx, client.ImageListOptions{
 		Filters: make(client.Filters).Add("reference", s.Image),
@@ -823,6 +835,14 @@ func (e *Engine) Down(ctx context.Context) error {
 	}
 	if _, err := e.cli.NetworkRemove(ctx, e.networkName(), client.NetworkRemoveOptions{}); err != nil && !isNotFound(err) {
 		errs = append(errs, fmt.Errorf("removing network: %w", err))
+	}
+
+	// Images this bay built go too. They are the largest thing a bay creates,
+	// so leaving them behind fills a disk far faster than any container or
+	// volume would -- and the developer has no way to tell which of the images
+	// on their machine came from a bay that no longer exists.
+	if err := e.removeBuiltImages(ctx); err != nil {
+		errs = append(errs, err)
 	}
 
 	if e.alloc != nil {

@@ -218,7 +218,7 @@ func (e *Engine) execThrowaway(ctx context.Context, service string, argv manifes
 	if !ok {
 		return 0, "", fmt.Errorf("engine: unknown service %q", service)
 	}
-	if err := e.ensureImage(ctx, s); err != nil {
+	if err := e.ensureImage(ctx, service, s); err != nil {
 		return 0, "", err
 	}
 

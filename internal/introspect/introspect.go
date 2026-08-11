@@ -118,6 +118,40 @@ func (d *detector) note(src Source, path, detail string) {
 	d.res.Evidence = append(d.res.Evidence, Evidence{Source: src, Path: rel, Detail: detail})
 }
 
+// composeBuild transcribes a Compose build stanza into devbay's form.
+//
+// Compose resolves the context relative to the project directory, which for a
+// compose file at the repository root is the same place devbay resolves it
+// from; a compose file in a subdirectory is the case worth being careful
+// about, so an absolute context is turned back into a repository-relative one
+// rather than written out as a path that only exists on this machine.
+func (d *detector) composeBuild(svc composetypes.ServiceConfig) *manifest.Build {
+	if svc.Build == nil {
+		return nil
+	}
+	ctxDir := svc.Build.Context
+	if ctxDir == "" {
+		ctxDir = "."
+	}
+	if filepath.IsAbs(ctxDir) {
+		if r, err := filepath.Rel(d.dir, ctxDir); err == nil && !strings.HasPrefix(r, "..") {
+			ctxDir = r
+		}
+	}
+	ctxDir = filepath.ToSlash(filepath.Clean(ctxDir))
+	if !strings.HasPrefix(ctxDir, ".") {
+		ctxDir = "./" + ctxDir
+	}
+
+	b := &manifest.Build{Context: ctxDir, Target: svc.Build.Target}
+	// Only recorded when it differs from the default, so the generated file
+	// stays readable.
+	if df := svc.Build.Dockerfile; df != "" && df != "Dockerfile" {
+		b.Dockerfile = df
+	}
+	return b
+}
+
 func (d *detector) gap(format string, args ...any) {
 	d.res.Gaps = append(d.res.Gaps, fmt.Sprintf(format, args...))
 }
@@ -201,10 +235,18 @@ func (d *detector) fromCompose(ctx context.Context) {
 			}
 			s := &manifest.Service{Image: image, Env: map[string]string{}}
 			if s.Image == "" {
-				// A build stanza needs a Dockerfile path devbay can reach, and
-				// resolving that correctly is worth more than guessing.
-				d.gap("service %q in %s builds from source; set `image:` or a `build:` block", name, name)
-				continue
+				// Transcribed rather than skipped. Most repositories describe
+				// their own application with a Dockerfile, so dropping these
+				// left a manifest holding the database and the cache and not
+				// the thing the developer actually wanted to run.
+				b := d.composeBuild(svc)
+				if b == nil {
+					d.gap("service %q declares neither an image nor a build context; set `image:` or `build:`", name)
+					continue
+				}
+				s.Build = b
+				d.note(SourceCompose, path,
+					fmt.Sprintf("service %q built from %s", name, b.Context))
 			}
 
 			for k, v := range svc.Environment {
