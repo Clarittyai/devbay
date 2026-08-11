@@ -28,6 +28,7 @@ const usage = `devbay — parallel, isolated local environments for coding agent
   devbay logs <bay> [service] [-n 100]     read scrubbed logs
   devbay url <bay> [service]               addresses for a service
   devbay focus <bay>                       move the canonical hostname
+  devbay watch <bay>                       apply host edits inside the containers
   devbay freeze|thaw|cool <bay>            change resident state
   devbay rm <bay> [--force]                destroy a bay
 
@@ -73,6 +74,8 @@ func main() {
 		err = cmdURL(ctx, args)
 	case "focus":
 		err = cmdFocus(ctx, args)
+	case "watch":
+		err = cmdWatch(ctx, args)
 	case "freeze", "thaw", "cool":
 		err = cmdState(ctx, cmd, args)
 	case "rm", "destroy":

@@ -79,7 +79,7 @@ const (
 	ForkNone     Fork = "none"   // genuinely shared; warned about
 )
 
-// WatchAction is what the daemon does when a watched path changes.
+// WatchAction is what devbay does when a watched path changes.
 type WatchAction string
 
 const (

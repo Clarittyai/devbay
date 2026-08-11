@@ -159,6 +159,26 @@ is invisible: it holds a branch, a port block and possibly containers, and
 nothing lists it. Every failure test asserts that nothing was left behind, not
 merely that an error was returned.
 
+## Editing while it runs
+
+```sh
+devbay watch <bay>
+```
+
+Applies edits made in the bay's worktree to its containers: restart, rebuild,
+or nothing, per the service's `watch_action`.
+
+devbay does the watching on the host on purpose. The FUSE and virtiofs inotify
+patches were never merged, so a file edited outside a container does not
+reliably produce an inotify event inside it — which is why every guide tells
+you to set `CHOKIDAR_USEPOLLING`, and why five bays of a JavaScript monorepo
+spin a fan for nothing. Watching where the events actually work costs one
+process per bay you are editing, and no polling anywhere.
+
+Each bay is its own checkout, so the files to edit are the ones in that bay's
+worktree — `devbay status <bay>` prints the path, and `devbay watch` prints it
+when it starts.
+
 ## Generating a manifest
 
 `devbay init` reads what the repository already says about itself, in order of

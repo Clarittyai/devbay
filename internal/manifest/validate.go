@@ -189,6 +189,25 @@ func validateService(r *Result, m *Manifest, pat spec.Rules, name string, s *Ser
 		}
 	}
 
+	// Watch patterns are evaluated against paths relative to the worktree, so
+	// anything reaching outside it can never match -- and a watch that can
+	// never match is the silent failure this field exists to remove.
+	for i, pattern := range s.Watch {
+		where := fmt.Sprintf("%s/watch/%d", at, i)
+		switch {
+		case strings.TrimSpace(pattern) == "":
+			r.add(Error, "", where, "watch pattern is empty")
+		case strings.HasPrefix(pattern, "/"):
+			r.add(Error, "", where, "watch patterns are relative to the repository, so an absolute path never matches")
+		case pattern == ".." || strings.HasPrefix(pattern, "../") || strings.Contains(pattern, "/../"):
+			r.add(Error, "", where, "watch pattern reaches outside the repository")
+		}
+	}
+	if len(s.Watch) == 0 && s.WatchAction != "" {
+		r.add(Warn, "", at+"/watch_action",
+			"a watch action with no `watch:` list does nothing")
+	}
+
 	// Kind-specific shape. A oneshot's exit code is its probe, so it is exempt
 	// from R5 — and must not pretend to serve traffic.
 	if s.IsOneshot() {

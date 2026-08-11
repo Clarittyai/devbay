@@ -326,3 +326,98 @@ func TestBuildArgumentsCannotSmuggleFlags(t *testing.T) {
 		}
 	}
 }
+
+// The claim behind `watch:`: an edit on the host reaches the container.
+//
+// It has to be devbay doing the watching. The FUSE and virtiofs inotify
+// patches were never merged, so a host edit does not reliably produce an
+// inotify event inside the container -- which is why every guide tells people
+// to turn on polling, and why five bays of a JavaScript monorepo spin a fan
+// for nothing. No polling is configured here.
+func TestAHostEditReachesARunningContainer(t *testing.T) {
+	cli := dockerOrSkip(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	worktree := t.TempDir()
+	testutil.ReclaimOnCleanup(t, cli, worktree)
+	web := filepath.Join(worktree, "web")
+	if err := os.MkdirAll(web, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(web, "index.html"), []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(web, "Dockerfile"),
+		[]byte("FROM nginx:alpine\nCOPY index.html /usr/share/nginx/html/index.html\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := manifest.Parse([]byte(`
+version: 1
+project: watchtest
+services:
+  web:
+    build: ./web
+    port: 80
+    primary: true
+    watch: ["web/**"]
+    watch_action: rebuild
+    health: {http: /}
+tasks:
+  unit: {run: [true], needs: []}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := manifest.Validate(m); !r.OK() {
+		t.Fatalf("manifest: %v", r.Err())
+	}
+
+	e, err := New(ctx, Options{Manifest: m, Bay: "w1", Worktree: worktree,
+		Log: func(f string, a ...any) { t.Logf(f, a...) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		_ = e.Down(c)
+	})
+	plan, err := BootPlan(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Up(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+
+	serves := func() string {
+		t.Helper()
+		ep, err := e.Resolver().Endpoint("web", PlaneHost)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.Get("http://" + ep.Addr() + "/")
+		if err != nil {
+			t.Fatalf("unreachable: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return strings.TrimSpace(string(body))
+	}
+	if got := serves(); got != "before" {
+		t.Fatalf("served %q before any edit", got)
+	}
+
+	// The edit, on the host, exactly as an editor would make it.
+	if err := os.WriteFile(filepath.Join(web, "index.html"), []byte("after"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Reload(ctx, "web"); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := serves(); got != "after" {
+		t.Errorf("served %q after the edit and reload; the change did not reach the container", got)
+	}
+}

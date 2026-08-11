@@ -381,6 +381,14 @@ func (d *detector) fromCompose(ctx context.Context) {
 					continue
 				}
 				s.Build = b
+				// A service built from a directory in this repository is one
+				// whose code lives there, so that directory is what a
+				// developer will edit. Watching anything else would be a
+				// guess; watching this is a transcription.
+				if ctxDir := strings.TrimPrefix(b.Context, "./"); ctxDir != "" && ctxDir != "." {
+					s.Watch = []string{ctxDir + "/**"}
+					s.WatchAction = manifest.WatchRebuild
+				}
 				d.note(SourceCompose, path,
 					fmt.Sprintf("service %q built from %s", name, b.Context))
 			}

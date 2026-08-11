@@ -398,7 +398,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Globs, relative to the worktree root, that trigger `watch_action` when they change.\n\nWatching is performed BY THE DAEMON ON THE HOST using native FSEvents or inotify, and never by a watcher inside the container. virtiofs does not implement inotify - the kernel patches were never merged - so host edits do not reliably produce inotify events inside a container on macOS, and the usual workaround of polling costs real CPU per watcher per bay. Declaring globs here is what replaces polling."
+          "description": "Globs, relative to the repository, that devbay watches on the host and reacts to. Watched on the host deliberately: the FUSE and virtiofs inotify patches were never merged, so a host edit does not reliably produce an inotify event inside a container, and the usual workaround -- polling in every watcher -- costs real CPU per service per bay. `src/**` matches at any depth; a bare name like `package.json` matches at any depth too. Run `devbay watch <bay>` to apply them."
         },
         "watch_action": {
           "enum": [
@@ -407,7 +407,7 @@
             "rebuild"
           ],
           "default": "restart",
-          "description": "sync copies changed files in; restart restarts the process; rebuild re-runs install and restarts."
+          "description": "What to do when a watched path changes. `restart` (the default) restarts the container, for a process that reads its code or configuration once at startup. `rebuild` rebuilds the image and replaces the container, for code baked into the image rather than read from the mount. `sync` does nothing, because the worktree is bind-mounted and a process watching its own files has already seen the change."
         },
         "volumes": {
           "type": "array",
