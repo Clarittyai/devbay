@@ -13,6 +13,7 @@ import (
 
 	"github.com/Clarittyai/devbay/internal/manifest"
 	"github.com/Clarittyai/devbay/internal/proxy"
+	"github.com/Clarittyai/devbay/internal/testutil"
 )
 
 // These tests need a live Docker daemon. They are the only ones that do, and
@@ -87,7 +88,7 @@ func testEngine(t *testing.T, bay string) (*Engine, *manifest.Manifest) {
 // testEngineWith builds an engine, optionally behind a proxy.
 func testEngineWith(t *testing.T, bay string, p *proxy.Proxy) (*Engine, *manifest.Manifest) {
 	t.Helper()
-	dockerOrSkip(t)
+	cli := dockerOrSkip(t)
 
 	m, err := manifest.Parse([]byte(testManifest))
 	if err != nil {
@@ -97,10 +98,18 @@ func testEngineWith(t *testing.T, bay string, p *proxy.Proxy) (*Engine, *manifes
 		t.Fatalf("test manifest is invalid: %v", r.Err())
 	}
 
+	// Registered after the directory exists and before the engine can write
+	// into it, so ownership is restored ahead of t.TempDir()'s own removal --
+	// cleanups run last-registered-first. Without this, a volume mounted at a
+	// path inside the bind mount leaves a root-owned mountpoint behind on
+	// Linux and the temp directory cannot be deleted.
+	worktree := t.TempDir()
+	testutil.ReclaimOnCleanup(t, cli, worktree)
+
 	e, err := New(context.Background(), Options{
 		Manifest: m,
 		Bay:      bay,
-		Worktree: t.TempDir(),
+		Worktree: worktree,
 		Proxy:    p,
 		Log:      func(f string, a ...any) { t.Logf(f, a...) },
 	})
@@ -359,7 +368,7 @@ tasks:
 	}
 
 	e, err := New(context.Background(), Options{
-		Manifest: m, Bay: "broken", Worktree: t.TempDir(),
+		Manifest: m, Bay: "broken", Worktree: brokenWorktree(t),
 		Log: func(f string, a ...any) { t.Logf(f, a...) },
 	})
 	if err != nil {
@@ -420,4 +429,16 @@ func TestMain(m *testing.M) {
 	}
 	fmt.Fprintln(os.Stderr)
 	os.Exit(code)
+}
+
+// brokenWorktree is the temp directory for a bay that is expected to fail
+// boot. It still gets ownership restored: the failure happens after containers
+// have started, so they have already had the chance to write into it.
+func brokenWorktree(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if cli, err := client.New(client.FromEnv, client.WithAPIVersionNegotiation()); err == nil {
+		testutil.ReclaimOnCleanup(t, cli, dir)
+	}
+	return dir
 }

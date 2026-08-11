@@ -224,7 +224,7 @@ func newManager(t *testing.T) (*bay.Manager, string) {
 	m, err := bay.Open(context.Background(), bay.Options{
 		Dir:          repo,
 		StatePath:    state,
-		WorktreeRoot: filepath.Join(t.TempDir(), "worktrees"),
+		WorktreeRoot: tempDir(t, "worktrees"),
 		NoProxy:      true, // hostname routing has its own tests; these are about the stack
 		Log:          func(f string, a ...any) { t.Logf(f, a...) },
 	})
@@ -512,7 +512,7 @@ func TestBaysSurviveAcrossManagers(t *testing.T) {
 	}
 	repo := newRepo(t)
 	state := filepath.Join(t.TempDir(), "state.db")
-	wtRoot := filepath.Join(t.TempDir(), "worktrees")
+	wtRoot := tempDir(t, "worktrees")
 	ctx := context.Background()
 
 	opts := bay.Options{Dir: repo, StatePath: state, WorktreeRoot: wtRoot, NoProxy: true}

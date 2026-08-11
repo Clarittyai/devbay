@@ -12,6 +12,8 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
+
+	"github.com/Clarittyai/devbay/internal/testutil"
 )
 
 // The rule program is generated, so its shape can be checked without Docker.
@@ -189,13 +191,23 @@ func bayNetwork(t *testing.T, cli *client.Client, ctx context.Context, name stri
 	return netName
 }
 
+// subjectImage is the container these tests apply a policy to. Pinned to a
+// minor version so a moving tag cannot change what "no egress" is being proved
+// about.
+const subjectImage = "alpine:3.20"
+
 // subject starts a container on a network and returns its id and gateway.
 func subject(t *testing.T, cli *client.Client, ctx context.Context, name, netName string) (id, gateway, ip string) {
 	t.Helper()
+	// Pulled explicitly: this test reaches for the Docker API directly rather
+	// than going through the engine, so nothing else will have fetched it, and
+	// on a machine that has run these tests before it is already cached --
+	// which is why the omission survived until CI ran on a fresh runner.
+	testutil.PullImage(ctx, t, cli, subjectImage)
 	res, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Name: "devbay-egress-test-" + name,
 		Config: &container.Config{
-			Image:  "alpine:3.20",
+			Image:  subjectImage,
 			Cmd:    []string{"sleep", "300"},
 			Labels: map[string]string{"dev.devbay.test": "1"},
 		},

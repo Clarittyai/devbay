@@ -7,11 +7,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/moby/moby/client"
+
 	"github.com/Clarittyai/devbay/internal/bay"
+	"github.com/Clarittyai/devbay/internal/testutil"
 )
 
 func tempFile(t *testing.T, name string) string { return filepath.Join(t.TempDir(), name) }
-func tempDir(t *testing.T, name string) string  { return filepath.Join(t.TempDir(), name) }
+
+// tempDir returns a path inside a fresh temp directory whose ownership is
+// restored before the directory is removed.
+//
+// Containers in these tests write into the worktrees under here as root, and
+// on Linux that is the host's ownership -- so without the reclaim, t.TempDir's
+// own cleanup fails to delete files the test itself caused to exist, and a
+// passing test reports a failure. devbay's teardown handles the worktrees it
+// created; this covers everything else under the same root.
+func tempDir(t *testing.T, name string) string {
+	t.Helper()
+	root := t.TempDir()
+	reclaimTemp(t, root)
+	return filepath.Join(root, name)
+}
+
+// reclaimTemp registers ownership restoration for a directory containers will
+// write into. A missing Docker client is not fatal: every caller is already in
+// a test that skips without one.
+func reclaimTemp(t *testing.T, dir string) {
+	t.Helper()
+	cli, err := client.New(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return
+	}
+	testutil.ReclaimOnCleanup(t, cli, dir)
+}
 
 // With enforcement on, a bay's services reach only what the manifest declares.
 //

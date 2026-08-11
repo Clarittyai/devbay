@@ -187,7 +187,7 @@ func TestWorktreeDeletedOutsideDevbayIsDropped(t *testing.T) {
 	}
 	repo := newRepo(t)
 	state := filepath.Join(t.TempDir(), "state.db")
-	wtRoot := filepath.Join(t.TempDir(), "worktrees")
+	wtRoot := tempDir(t, "worktrees")
 	ctx := context.Background()
 	opts := bay.Options{Dir: repo, StatePath: state, WorktreeRoot: wtRoot, NoProxy: true}
 

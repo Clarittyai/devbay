@@ -85,7 +85,7 @@ func TestMintedCredentialsDieWithTheBay(t *testing.T) {
 	m, err := bay.Open(ctx, bay.Options{
 		Dir:          repo,
 		StatePath:    filepath.Join(t.TempDir(), "state.db"),
-		WorktreeRoot: filepath.Join(t.TempDir(), "worktrees"),
+		WorktreeRoot: tempDir(t, "worktrees"),
 		AuditPath:    filepath.Join(t.TempDir(), "audit.jsonl"),
 		NoProxy:      true,
 		Log:          func(f string, a ...any) { t.Logf(f, a...) },
