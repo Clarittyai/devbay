@@ -31,8 +31,15 @@ cport=$(grep -Eo "^ *-? *'?[0-9]+:[0-9]+'?" compose.yaml docker-compose.yaml doc
 # that has nothing to do with the stack. devbay recreates it on the next bay.
 docker rm -f devbay-proxy >/dev/null 2>&1
 docker compose up -d >/dev/null 2>&1
-cstate=$(serves "" "$cport" >/dev/null 2>&1 && echo up || echo down)
+served=$(serves "" "$cport" >/dev/null 2>&1 && echo yes || echo no)
 cdetail=$(docker compose ps -a --format '{{.Service}}:{{.State}}' 2>/dev/null | tr '\n' ',' | cut -c1-70)
+# Serving on one port is not the same as the stack working: a compose file
+# with `restart: unless-stopped` will crash-loop a service forever while
+# another one answers, and devbay holds every declared service to being
+# healthy. The baseline has to use the same standard or the comparison
+# flatters whichever tool is more forgiving.
+broken=$(echo "$cdetail" | grep -Eo 'restarting|exited' | head -1)
+if [ "$served" = yes ] && [ -z "$broken" ]; then cstate=up; else cstate=down; fi
 docker compose down -v --remove-orphans >/dev/null 2>&1
 
 # --- devbay ---------------------------------------------------------------
