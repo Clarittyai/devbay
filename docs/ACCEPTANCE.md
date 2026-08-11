@@ -9,9 +9,11 @@ being true.
 make acceptance
 ```
 
-Roughly three minutes, needs Docker, and leaves nothing behind. It is separate
-from `make test` because it is slow and because it is asking a different
-question — the unit and integration suites check that the parts work; this
+A few minutes, needs Docker, and leaves nothing behind — including the
+developer's own state, which it never reads or writes: the suite runs with its
+own `HOME`, so a pass means something on a machine that already has bays
+running. It is separate from `make test` because it is slow and because it is
+asking a different question — the unit and integration suites check that the parts work; this
 checks that the tool does.
 
 ## The scenarios
@@ -42,6 +44,7 @@ something a developer could see for themselves.
 | R | Seeding is paid for once | the second bay of a project re-runs the migration suite, restores incomplete data, or shares a database with the first |
 | S | Bays stay within a budget | a new bay pushes the machine past the resident budget, or the focused bay is the one stopped |
 | T | An unseen repository just works | `devbay init` then `devbay new` on a repository with no compose file and no manifest does not produce a serving bay without human edits |
+| U | An unseen compose stack just works | a transcribed stack loses its secret file, its command, its restart policy or the volume that shields its dependencies |
 
 Scenario J deliberately does not assert that application data survives. That is
 the application's business: this example's cache declares no volume, so losing
@@ -50,9 +53,9 @@ that asserted otherwise would be testing redis.
 
 ## The corpus check
 
-The scenarios above run against a repository devbay was written for, plus one
-(T) it has never seen. Neither answers the question a developer actually has:
-*will it work on mine?*
+The scenarios above run against a repository devbay was written for, plus two
+(T and U) it has never seen. Neither answers the question a developer actually
+has: *will it work on mine?*
 
 That is answered separately, by hand, against real repositories -- the forty
 stacks in [docker/awesome-compose](https://github.com/docker/awesome-compose)

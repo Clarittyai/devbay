@@ -825,3 +825,103 @@ http.createServer((req, res) => {
 		t.Errorf("T: the detected test task did not pass:\n%s", out)
 	}
 }
+
+// TestAnUnseenComposeStackJustWorks is scenario U.
+//
+// The companion to T, for the path most repositories actually take. A compose
+// file says more than which images to run: the password its database reads
+// from a file, the command that is not the image's default, the restart policy
+// it uses where it cannot express a dependency, and the anonymous volume that
+// keeps the bind mount from hiding installed dependencies. Each of those was
+// dropped at some point, and each produced a stack that booted into a
+// different failure.
+func TestAnUnseenComposeStackJustWorks(t *testing.T) {
+	e := setup(t)
+
+	repo := filepath.Join(t.TempDir(), "stack")
+	files := map[string]string{
+		"compose.yaml": `
+services:
+  db:
+    image: postgres:16
+    restart: on-failure
+    command: ["-c", "max_connections=42"]
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/db-password
+      POSTGRES_DB: app
+    secrets: [db-password]
+  web:
+    build: ./web
+    ports: ["8080:8080"]
+    depends_on: [db]
+    volumes:
+      - ./web:/srv
+      - /srv/node_modules
+secrets:
+  db-password:
+    file: secrets/db-password.txt
+`,
+		"secrets/db-password.txt": "hunter2\n",
+		"web/Dockerfile": `FROM node:22-alpine
+WORKDIR /srv
+COPY package.json .
+RUN npm install --no-audit --no-fund
+COPY server.js .
+CMD ["node", "server.js"]
+`,
+		"web/package.json": `{"name":"web","dependencies":{}}`,
+		"web/server.js": `const http = require('http');
+const fs = require('fs');
+http.createServer((req, res) => {
+  // The bind mount of ./web lands on /srv and the host has no node_modules,
+  // so this directory exists only if the shielding volume was carried over.
+  const deps = fs.existsSync('/srv/node_modules');
+  res.writeHead(200, {'Content-Type': 'text/plain'});
+  res.end('web up, node_modules=' + deps);
+}).listen(8080, '0.0.0.0');
+`,
+	}
+	for name, body := range files {
+		p := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.repo = repo
+	e.git("init", "-q")
+	e.git("add", "-A")
+	e.git("-c", "user.email=a@t", "-c", "user.name=a", "commit", "-qm", "stack")
+
+	e.run("init")
+	if out, err := e.try("validate"); err != nil {
+		t.Fatalf("U: the transcribed manifest does not validate:\n%s", out)
+	}
+	e.git("add", "-A")
+	e.git("-c", "user.email=a@t", "-c", "user.name=a", "commit", "-qm", "manifest")
+
+	e.run("new", "stack")
+	t.Cleanup(func() { _, _ = e.try("rm", "stack", "--force") })
+
+	// The web service is the primary, not the database.
+	code, body := e.get("stack.stack.localhost", "/")
+	if code != 200 {
+		t.Fatalf("U: the bay does not serve on its own hostname; got %d. "+
+			"A database claiming the hostname is the usual cause", code)
+	}
+	if !strings.Contains(body, "node_modules=true") {
+		t.Errorf("U: the bind mount hid the installed dependencies: %q", body)
+	}
+
+	// The database got its password file, or it would not have started.
+	out, err := exec.Command("docker", "exec", "devbay-stack-stack-db",
+		"psql", "-U", "postgres", "-d", "app", "-tAc", "show max_connections").Output()
+	if err != nil {
+		t.Fatalf("U: the database is not usable, so its secret file or its command did not survive: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "42" {
+		t.Errorf("U: the compose command was dropped; max_connections is %q, want 42", strings.TrimSpace(string(out)))
+	}
+}
