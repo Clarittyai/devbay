@@ -732,3 +732,259 @@ services:
 		t.Errorf("a third-party URL was rewritten to %q", got)
 	}
 }
+
+// Everything below is a field real compose files depend on and devbay used to
+// drop. Each one produced a manifest that looked complete and booted into a
+// different failure.
+
+func TestComposeSecretsBecomeFileMounts(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"compose.yaml": `
+services:
+  db:
+    image: mariadb:10
+    ports: ["3306:3306"]
+    secrets: [db-password]
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/db-password
+secrets:
+  db-password:
+    file: db/password.txt
+`,
+		"db/password.txt": "hunter2\n",
+	})
+	res := detect(t, dir)
+	assertValid(t, res)
+
+	db := res.Manifest.Services["db"]
+	if db == nil {
+		t.Fatal("the database was not transcribed at all")
+	}
+	var found bool
+	for _, m := range db.Mounts {
+		if m.Target == "/run/secrets/db-password" && m.Source == "./db/password.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the secret file was not mounted, so the database would exit on boot: %+v", db.Mounts)
+	}
+}
+
+// A secret whose value lives in the environment must not be copied into a
+// manifest; the developer is told to reference it instead.
+func TestComposeEnvironmentSecretsAreReportedNotCopied(t *testing.T) {
+	t.Setenv("DB_PASSWORD", "hunter2")
+	dir := fixture(t, map[string]string{
+		"compose.yaml": `
+services:
+  db:
+    image: postgres:16
+    ports: ["5432:5432"]
+    secrets: [pw]
+secrets:
+  pw:
+    environment: DB_PASSWORD
+`,
+	})
+	res := detect(t, dir)
+	blob := res.Manifest.Services["db"]
+	for _, m := range blob.Mounts {
+		if strings.Contains(m.Source, "hunter2") || strings.Contains(m.Target, "hunter2") {
+			t.Fatal("a credential value reached the manifest")
+		}
+	}
+	if !anyGapMentions(res, "devbay does not copy credentials") {
+		t.Errorf("an environment-backed secret was dropped without saying so: %v", res.Gaps)
+	}
+}
+
+func TestComposeRestartIsTranscribed(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"compose.yaml": `
+services:
+  web:
+    image: nginx:alpine
+    ports: ["80:80"]
+    restart: on-failure
+`,
+	})
+	res := detect(t, dir)
+	assertValid(t, res)
+	if got := res.Manifest.Services["web"].Restart; got != manifest.RestartOnFailure {
+		t.Errorf("restart policy = %q, want on-failure; without it a service that races its peer stays dead", got)
+	}
+}
+
+func TestComposeCommandIsTranscribed(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"compose.yaml": `
+services:
+  prom:
+    image: prom/prometheus
+    ports: ["9090:9090"]
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+`,
+	})
+	res := detect(t, dir)
+	assertValid(t, res)
+	got := res.Manifest.Services["prom"].Start
+	if len(got) != 1 || got[0] != "--config.file=/etc/prometheus/prometheus.yml" {
+		t.Errorf("command = %v; a dropped command starts the service with different configuration", got)
+	}
+}
+
+// The node_modules idiom: a bind mount over the source tree, and an anonymous
+// volume putting the installed dependencies back.
+func TestComposeAnonymousVolumesKeepDependencies(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"compose.yaml": `
+services:
+  web:
+    build: ./app
+    ports: ["3000:3000"]
+    volumes:
+      - ./app:/project
+      - /project/node_modules
+`,
+		"app/Dockerfile":   "FROM node:22\n",
+		"app/package.json": `{"name":"a"}`,
+	})
+	res := detect(t, dir)
+	assertValid(t, res)
+	vols := res.Manifest.Services["web"].Volumes
+	if len(vols) != 1 || vols[0] != "/project/node_modules" {
+		t.Errorf("volumes = %v, want /project/node_modules; without it the bind mount hides the dependencies", vols)
+	}
+}
+
+// A database with a port sorts before the application and must still not be
+// the service the developer's browser is pointed at.
+func TestADatastoreNeverClaimsTheBayHostname(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"compose.yaml": `
+services:
+  db:
+    image: mariadb:10
+    ports: ["3306:3306"]
+  proxy:
+    image: nginx
+    ports: ["80:80"]
+    depends_on: [db]
+`,
+	})
+	res := detect(t, dir)
+	assertValid(t, res)
+	if res.Manifest.Services["db"].Primary {
+		t.Error("the database claimed the bay hostname, so opening the bay reaches a database")
+	}
+	if !res.Manifest.Services["proxy"].Primary {
+		t.Error("the web-facing service was not made primary")
+	}
+}
+
+// A repository with no compose file still has to produce something that boots.
+// Before toolchain inference, a Procfile alone yielded a manifest with no
+// image, which does not even validate.
+func TestAProcfileRepoGetsARunnableManifest(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"Procfile":          "web: node index.js\n",
+		"package.json":      `{"name":"a","engines":{"node":">=20.11"}}`,
+		"package-lock.json": `{"lockfileVersion":3}`,
+		"index.js":          "require('express')\n",
+	})
+	res := detect(t, dir)
+	assertValid(t, res)
+
+	web := res.Manifest.Services["web"]
+	if web.Image != "node:20-alpine" {
+		t.Errorf("image = %q, want node:20-alpine taken from engines.node", web.Image)
+	}
+	if got := strings.Join(web.Install, " "); got != "npm ci" {
+		t.Errorf("install = %q, want npm ci from the lockfile", got)
+	}
+	if web.Port == 0 || web.Env["PORT"] == "" {
+		t.Errorf("a web process got no port: port=%d PORT=%q", web.Port, web.Env["PORT"])
+	}
+	var shielded bool
+	for _, v := range web.Volumes {
+		if v == "node_modules" {
+			shielded = true
+		}
+	}
+	if !shielded {
+		t.Error("node_modules was left in the bind mount, where the mount hides what install produced")
+	}
+}
+
+// Python installs into the image, not the worktree, so the install has to be
+// aimed somewhere both containers can see or it disappears with the throwaway.
+func TestPythonDependenciesGoSomewhereTheServiceCanSeeThem(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"Procfile":         "web: gunicorn app:app\n",
+		"requirements.txt": "flask\n",
+		".python-version":  "3.11\n",
+	})
+	res := detect(t, dir)
+	assertValid(t, res)
+
+	web := res.Manifest.Services["web"]
+	if web.Image != "python:3.11-slim" {
+		t.Errorf("image = %q, want python:3.11-slim from .python-version", web.Image)
+	}
+	if !strings.Contains(strings.Join(web.Install, " "), "--target") {
+		t.Errorf("install = %v; without a target this installs into a container devbay then deletes", web.Install)
+	}
+	if web.Env["PYTHONPATH"] == "" {
+		t.Error("nothing points the runtime at the installed packages")
+	}
+	var kept bool
+	for _, v := range web.Volumes {
+		if v == web.Env["PYTHONPATH"] {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Errorf("the install target %q is not a volume, so it is discarded with the install container", web.Env["PYTHONPATH"])
+	}
+}
+
+// The wedge: a bay's own hostname has to work in a browser.
+func TestDjangoIsToldAboutTheBayHostname(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"manage.py":        "#!/usr/bin/env python\n",
+		"requirements.txt": "django\n",
+		"proj/settings.py": `ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", ("localhost",))`,
+		"Procfile":         "web: gunicorn proj.wsgi\n",
+	})
+	res := detect(t, dir)
+	assertValid(t, res)
+
+	got := res.Manifest.Services["web"].Env["ALLOWED_HOSTS"]
+	if !strings.Contains(got, "${bay.web.public_host}") {
+		t.Errorf("ALLOWED_HOSTS = %q; the bay's own hostname was not added, so a browser gets 400", got)
+	}
+	if !strings.Contains(got, "127.0.0.1") {
+		t.Errorf("ALLOWED_HOSTS = %q; devbay's own probe uses 127.0.0.1 and would fail the boot", got)
+	}
+}
+
+// A wire protocol does not answer GET /, and a probe that assumes it does
+// hangs until the timeout instead of failing.
+func TestNonHTTPPortsGetATCPProbe(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"compose.yaml": `
+services:
+  broker:
+    image: someorg/custom-broker:1
+    ports: ["5672:5672"]
+`,
+	})
+	res := detect(t, dir)
+	assertValid(t, res)
+	h := res.Manifest.Services["broker"].Health
+	if h == nil || h.TCP != 5672 {
+		t.Errorf("health = %+v, want a TCP probe on 5672", h)
+	}
+}

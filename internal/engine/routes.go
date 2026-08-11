@@ -3,8 +3,10 @@ package engine
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/Clarittyai/devbay/internal/proxy"
 )
@@ -148,4 +150,58 @@ func (e *Engine) URLs() map[string]string {
 		}
 	}
 	return out
+}
+
+// checkOrigin tells the developer when their application is up but refuses the
+// bay's hostname.
+//
+// This is the one failure that makes devbay look broken while everything it
+// does is working. The health probe runs against 127.0.0.1:<port>, because
+// that is the only address Go can resolve, and the application answers it
+// happily -- so the bay reports healthy. The browser then opens
+// feature-x.myapp.localhost and gets 400, because web frameworks keep an
+// allowlist of hostnames they will answer for and a bay hostname is not on it:
+// Django's ALLOWED_HOSTS, Rails' config.hosts, Vite's server.allowedHosts.
+//
+// Per-bay browser origins are the reason devbay exists, so failing at the last
+// step in a way that reads as devbay's fault is worth one HTTP request to
+// catch. Advisory only: it never fails a boot, because the application is
+// running and the developer may not care about the browser at all.
+func (e *Engine) checkOrigin(ctx context.Context) {
+	if e.prox == nil || e.prox.HTTPPort == 0 {
+		return
+	}
+	name := e.m.PrimaryService()
+	s := e.m.Services[name]
+	if s == nil || s.Health == nil || s.Health.HTTP == "" {
+		return // no evidence it speaks HTTP, so nothing to compare
+	}
+
+	host := e.res.Hostname(name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d%s", e.prox.HTTPPort, s.Health.HTTP), nil)
+	if err != nil {
+		return
+	}
+	req.Host = host
+
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusForbidden {
+		return
+	}
+	e.Log("  note: %s answers on its port but returns %d for the hostname %s.", name, resp.StatusCode, host)
+	e.Log("        Web frameworks keep an allowlist of hostnames they will serve -- Django's")
+	e.Log("        ALLOWED_HOSTS, Rails' config.hosts, Vite's server.allowedHosts. Add %s,", host)
+	e.Log("        or the whole `.localhost` suffix, so the bay's own origin works in a browser.")
 }

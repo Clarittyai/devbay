@@ -157,8 +157,8 @@
     },
     "interpolated": {
       "type": "string",
-      "description": "R7 - INTERPOLATION IS LIMITED TO TWO NAMESPACES. Only ${bay.<service>.<field>} and ${secret:<path>} are permitted. No arbitrary expressions, no nesting, no environment passthrough. Any other ${...} sequence is a validation error.\n\nThe bay namespace is ADDRESS-PLANE AWARE, which is the single most important detail in this schema:\n  ${bay.<svc>.url}         resolves to the container-network address (http://<svc>:<port>) when injected into a container, and to http://127.0.0.1:<allocated> when returned to the host or to an agent over MCP.\n  ${bay.<svc>.public_url}  resolves to the browser-facing origin (https://<svc>.<bay>.<project>.localhost).\n  ${bay.<svc>.ports.<name>} resolves a secondary port declared in that service's `ports` map.\nServer-side variables want `url`. Browser-exposed variables (NEXT_PUBLIC_*, VITE_*, REACT_APP_*) want `public_url`. Confusing the two is the most common cause of 'works in the browser, breaks in SSR', because *.localhost does not resolve through getaddrinfo - only Chrome, Firefox, and curl special-case it.\n\nThe regex below is written without lookahead so that it is valid under RE2 (Go) as well as ECMA-262.",
-      "pattern": "^(?:[^$]|\\$\\{(?:bay\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.(?:url|public_url|host|port|name|user|password|ports\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)|secret:[A-Za-z0-9/_.:-]+)\\}|\\$[^{])*\\$?$",
+      "description": "R7 - INTERPOLATION IS LIMITED TO TWO NAMESPACES. Only ${bay.<service>.<field>} and ${secret:<path>} are permitted. No arbitrary expressions, no nesting, no environment passthrough. Any other ${...} sequence is a validation error.\n\nThe bay namespace is ADDRESS-PLANE AWARE, which is the single most important detail in this schema:\n  ${bay.<svc>.url}         resolves to the container-network address (http://<svc>:<port>) when injected into a container, and to http://127.0.0.1:<allocated> when returned to the host or to an agent over MCP.\n  ${bay.<svc>.public_url}  resolves to the browser-facing origin (https://<svc>.<bay>.<project>.localhost).\n  ${bay.<svc>.public_host}  resolves to that browser hostname on its own, with no scheme, which is the form a framework's allowed-hosts setting takes (Django ALLOWED_HOSTS, Rails config.hosts).\n  ${bay.<svc>.ports.<name>} resolves a secondary port declared in that service's `ports` map.\nServer-side variables want `url`. Browser-exposed variables (NEXT_PUBLIC_*, VITE_*, REACT_APP_*) want `public_url`. Confusing the two is the most common cause of 'works in the browser, breaks in SSR', because *.localhost does not resolve through getaddrinfo - only Chrome, Firefox, and curl special-case it.\n\nThe regex below is written without lookahead so that it is valid under RE2 (Go) as well as ECMA-262.",
+      "pattern": "^(?:[^$]|\\$\\{(?:bay\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.(?:url|public_url|public_host|host|port|name|user|password|ports\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)|secret:[A-Za-z0-9/_.:-]+)\\}|\\$[^{])*\\$?$",
       "not": {
         "description": "R3 - SECRETS ARE REFERENCES ONLY. A literal credential must never appear in the manifest, because the manifest is committed and reviewed in pull requests. This rejects well-known credential prefixes; the validator additionally applies an entropy heuristic, which a schema cannot express.",
         "pattern": "(sk_live_|sk_test_|rk_live_|pk_live_|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|AKIA|ASIA|ya29\\.|AIza|xox[baprse]-|npm_|dop_v1_|sk-ant-|-----BEGIN [A-Z ]*PRIVATE KEY-----)"
@@ -414,7 +414,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Paths, relative to the worktree root, backed by a named volume instead of the host bind mount - node_modules, .venv, vendor/bundle, target, .next. This is not an optimisation to defer: a bind-mounted dependency tree runs at roughly 2.5x native on macOS, and moving it to a named volume recovers near-native performance on every runtime."
+          "description": "Paths backed by a named volume instead of the host bind mount - node_modules, .venv, vendor/bundle, target, .next. Relative paths are resolved against the workspace; an absolute path is used exactly as given, which is what a service whose code is bind-mounted elsewhere needs. This is not an optimisation to defer: a bind-mounted dependency tree runs at roughly 2.5x native on macOS, and moving it to a named volume recovers near-native performance on every runtime. It is also what keeps a bind mount from hiding the dependencies the image installed at build time."
         },
         "egress": {
           "type": "array",
@@ -448,6 +448,16 @@
               }
             }
           }
+        },
+        "restart": {
+          "enum": [
+            "no",
+            "on-failure",
+            "always",
+            "unless-stopped"
+          ],
+          "default": "no",
+          "description": "What to do when the process exits, spelled the way Docker spells it and applied by the daemon. Present because real compose files depend on it: a service that talks to a peer it declares no dependency on races that peer at startup, and compose files handle it with `restart: on-failure` rather than depends_on. A oneshot may only use no or on-failure -- always would restart it after it succeeded and the wait for its exit code would never end."
         }
       },
       "oneOf": [

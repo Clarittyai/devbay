@@ -108,7 +108,7 @@ func (r *Result) Err() error {
 // refPattern extracts bay references from an interpolated value. The grammar
 // itself is enforced by the schema's pattern; this only locates the pieces.
 var refPattern = regexp.MustCompile(
-	`\$\{bay\.([a-z0-9-]+)\.(url|public_url|host|port|name|user|password|ports\.[a-z0-9-]+)\}`)
+	`\$\{bay\.([a-z0-9-]+)\.(url|public_url|public_host|host|port|name|user|password|ports\.[a-z0-9-]+)\}`)
 
 // Validate applies rules R1-R7 and the semantic checks a schema cannot express.
 //
@@ -265,6 +265,30 @@ func validateService(r *Result, m *Manifest, pat spec.Rules, name string, s *Ser
 	validateArgvFrom(r, pat, at+"/install", s.Install, s.Provided)
 	validateArgvFrom(r, pat, at+"/start", s.Start, s.Provided)
 	validateArgvFrom(r, pat, at+"/run", s.Run, s.Provided)
+
+	for i, v := range s.Volumes {
+		at := fmt.Sprintf("%s/volumes/%d", at, i)
+		switch {
+		case strings.TrimSpace(v) == "":
+			r.add(Error, "", at, "empty volume path")
+		case strings.Contains(v, ".."):
+			// The path names a place inside the container, and a volume
+			// mounted through .. lands somewhere nobody wrote down.
+			r.add(Error, "", at, fmt.Sprintf("%q contains .., so where it mounts depends on where it is read from", v))
+		}
+	}
+
+	if !s.Restart.Valid() {
+		r.add(Error, "", at+"/restart",
+			fmt.Sprintf("%q is not a restart policy; use no, on-failure, always or unless-stopped", s.Restart))
+	}
+	if s.IsOneshot() && s.Restart != "" && s.Restart != RestartNo && s.Restart != RestartOnFailure {
+		// A oneshot is waited on for its exit code. `always` would restart it
+		// after it succeeded, so the wait never ends and a migration runs
+		// forever.
+		r.add(Error, "", at+"/restart",
+			fmt.Sprintf("restart: %s on a oneshot would run it again after it succeeded; use on-failure or remove it", s.Restart))
+	}
 
 	if s.InstallScripts {
 		r.add(Warn, "", at+"/install_scripts",
@@ -444,6 +468,15 @@ func validateArgvFrom(r *Result, pat spec.Rules, at string, argv Argv, provided 
 			r.add(Error, "R1", fmt.Sprintf("%s/%d", at, i), "empty argument")
 		}
 	}
+	// Arguments to the image's own entrypoint, not a program. A compose file
+	// that says `command: ["--config.file=/etc/prometheus/prometheus.yml"]` is
+	// configuring the image, and there is no program name here for a human to
+	// approve -- the image is the thing being trusted, and it is named
+	// elsewhere in this service.
+	if strings.HasPrefix(argv[0], "-") {
+		return
+	}
+
 	// R2. Not an error: the command may be a committed, reviewable repo script
 	// such as bin/rspec. It is surfaced with the exact argv and approved once,
 	// keyed by that argv, so changing it re-prompts.

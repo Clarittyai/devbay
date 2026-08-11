@@ -294,7 +294,12 @@ func (e *Engine) Up(ctx context.Context, plan *Plan) error {
 	// Routes go up last. Publishing them earlier would give a supervisor a
 	// hostname that answers 502 while the bay is still coming up, which reads
 	// as a broken app rather than an unfinished boot.
-	return e.publishRoutes(ctx)
+	if err := e.publishRoutes(ctx); err != nil {
+		return err
+	}
+	// And once they are up, check the thing the developer is about to do.
+	e.checkOrigin(ctx)
+	return nil
 }
 
 // bring starts one service and waits for it to be ready.
@@ -350,7 +355,7 @@ func (e *Engine) bring(ctx context.Context, step Step) error {
 		}
 		if code != 0 {
 			tail, _ := e.Logs(ctx, name, 40)
-			return fmt.Errorf("%s: exited %d\n%s", name, code, tail)
+			return fmt.Errorf("%s: exited %d%s\n%s", name, code, diagnose(tail), tail)
 		}
 		e.Log("  %s completed", name)
 		return nil
@@ -367,13 +372,13 @@ func (e *Engine) bring(ctx context.Context, step Step) error {
 		// thing, so check for the exit before trusting the port error.
 		if alive, code, cerr := e.running(ctx, id); cerr == nil && !alive {
 			tail, _ := e.Logs(ctx, name, 40)
-			return fmt.Errorf("%s: exited with code %d during startup\n%s", name, code, tail)
+			return fmt.Errorf("%s: exited with code %d during startup%s\n%s", name, code, diagnose(tail), tail)
 		}
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	if err := e.waitHealthy(ctx, name, id, s); err != nil {
 		tail, _ := e.Logs(ctx, name, 40)
-		return fmt.Errorf("%s: %w\n%s", name, err, tail)
+		return fmt.Errorf("%s: %w%s\n%s", name, err, diagnose(tail), tail)
 	}
 	e.Log("  %s healthy", name)
 	return nil
@@ -455,6 +460,20 @@ func (e *Engine) alreadyUp(ctx context.Context, step Step) (bool, error) {
 
 // create builds the container for a service.
 func (e *Engine) create(ctx context.Context, name string, s *manifest.Service, cmd manifest.Argv) (string, error) {
+	return e.createFor(ctx, name, name, s, cmd)
+}
+
+// createFor makes a container whose dependency volumes belong to another
+// service.
+//
+// The install and task containers are throwaways that stand in for a real
+// service, and they have to mount that service's dependency volumes -- not
+// volumes of their own named after themselves. Getting this wrong is silent
+// and total: `npm ci` runs, reports success, writes node_modules into a volume
+// called web-install-node_modules that nothing else will ever mount, and the
+// service then starts and cannot find express. Nothing in either log mentions
+// a volume.
+func (e *Engine) createFor(ctx context.Context, name, owner string, s *manifest.Service, cmd manifest.Argv) (string, error) {
 	// Container environments are rendered on the container plane, so services
 	// address each other over the bay network and never through loopback or a
 	// browser hostname.
@@ -546,7 +565,7 @@ func (e *Engine) create(ctx context.Context, name string, s *manifest.Service, c
 	// captured and restored. Without this the state lives in the anonymous
 	// volume the image declares, which is invisible, unnameable and discarded
 	// with the container.
-	seed, err := e.prepareSeed(ctx, name, s)
+	seed, err := e.prepareSeed(ctx, owner, s)
 	if err != nil {
 		return "", err
 	}
@@ -561,14 +580,23 @@ func (e *Engine) create(ctx context.Context, name string, s *manifest.Service, c
 		mounts = append(mounts, seed.Mounts...)
 	}
 	for _, rel := range s.Volumes {
-		vol := e.volumeName(name, rel)
-		if err := e.ensureVolume(ctx, name, vol); err != nil {
+		vol := e.volumeName(owner, rel)
+		if err := e.ensureVolume(ctx, owner, vol); err != nil {
 			return "", err
+		}
+		// An absolute entry is placed exactly where it says. Services whose
+		// code is bind-mounted somewhere other than the workspace -- which is
+		// most services transcribed from a compose file -- need their
+		// dependency directory inside *that* tree, and a path relative to the
+		// workspace would silently put it somewhere harmless and useless.
+		target := rel
+		if !strings.HasPrefix(rel, "/") {
+			target = volumeBase + "/" + strings.Trim(rel, "/")
 		}
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeVolume,
 			Source: vol,
-			Target: volumeBase + "/" + strings.Trim(rel, "/"),
+			Target: target,
 		})
 	}
 
@@ -583,9 +611,10 @@ func (e *Engine) create(ctx context.Context, name string, s *manifest.Service, c
 			ExposedPorts: exposed,
 		},
 		HostConfig: &container.HostConfig{
-			Binds:        binds,
-			Mounts:       mounts,
-			PortBindings: bindings,
+			RestartPolicy: restartPolicy(s),
+			Binds:         binds,
+			Mounts:        mounts,
+			PortBindings:  bindings,
 		},
 		NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
@@ -624,7 +653,7 @@ func (e *Engine) runInstall(ctx context.Context, name string, s *manifest.Servic
 	// matters most: a package lifecycle script runs code devbay has never seen,
 	// from a repository it has just cloned, and reaching the network is its
 	// entire purpose.
-	id, err := e.create(ctx, installName, &tmp, manifest.Argv{"sleep", "3600"})
+	id, err := e.createFor(ctx, installName, name, &tmp, manifest.Argv{"sleep", "3600"})
 	if err != nil {
 		return err
 	}
@@ -780,13 +809,21 @@ func (e *Engine) ensureImage(ctx context.Context, name string, s *manifest.Servi
 	if s.Image == "" {
 		return errors.New("a service must set either image: or build:")
 	}
+	// Asked for by the exact reference Docker will resolve. A reference filter
+	// of "nginx" matches nginx:alpine, so a machine with any tag of an image
+	// convinced devbay that the one the manifest names was already there --
+	// and the pull was skipped, and container creation then failed with "No
+	// such image: nginx:latest". Untagged images are the common case in real
+	// compose files, so this failed on exactly the repositories devbay had
+	// never seen before.
+	ref := normalizeImageRef(s.Image)
 	found, err := e.cli.ImageList(ctx, client.ImageListOptions{
-		Filters: make(client.Filters).Add("reference", s.Image),
+		Filters: make(client.Filters).Add("reference", ref),
 	})
 	if err == nil && len(found.Items) > 0 {
 		return nil
 	}
-	e.Log("  pulling %s", s.Image)
+	e.Log("  pulling %s", ref)
 	resp, err := e.cli.ImagePull(ctx, s.Image, client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("pulling %s: %w", s.Image, err)
@@ -797,6 +834,59 @@ func (e *Engine) ensureImage(ctx context.Context, name string, s *manifest.Servi
 		return fmt.Errorf("pulling %s: %w", s.Image, err)
 	}
 	return nil
+}
+
+// restartPolicy translates the manifest's policy for Docker.
+//
+// Left to the daemon rather than reimplemented here, because devbay is not
+// resident: a CLI that exits cannot restart anything, and the one process on
+// this machine that watches containers for a living is already doing it.
+func restartPolicy(s *manifest.Service) container.RestartPolicy {
+	switch s.Restart {
+	case "", manifest.RestartNo:
+		return container.RestartPolicy{Name: "no"}
+	default:
+		return container.RestartPolicy{Name: container.RestartPolicyMode(s.Restart)}
+	}
+}
+
+// diagnose names the cause when a container's own output says the machine is
+// at fault rather than the application.
+//
+// Both of these read, in the log, as an application failing at something
+// arbitrary: a database that cannot create a directory, a binary that will not
+// execute. A developer will debug their own code for a long time before
+// suspecting the runtime's disk or the image's architecture, and both are one
+// line to fix once named.
+func diagnose(tail string) string {
+	switch {
+	case strings.Contains(tail, "no space left on device"):
+		return "\n\n  This is the container runtime running out of disk, not your application.\n" +
+			"  `docker system df` to look; `docker system prune` and `devbay rm` on bays you are done with."
+	case strings.Contains(tail, "exec format error"):
+		return "\n\n  This image was built for a different CPU architecture than this machine.\n" +
+			"  Rebuild it here, or run it with `platform:` set in the image's own build."
+	}
+	return ""
+}
+
+// normalizeImageRef spells out the tag Docker would infer.
+//
+// The tag is whatever follows the last colon in the final path element --
+// looking at the whole string would read the port in localhost:5000/app as a
+// tag, and a digest reference has no tag at all.
+func normalizeImageRef(image string) string {
+	if image == "" || strings.Contains(image, "@") {
+		return image
+	}
+	last := image
+	if i := strings.LastIndex(image, "/"); i >= 0 {
+		last = image[i+1:]
+	}
+	if strings.Contains(last, ":") {
+		return image
+	}
+	return image + ":latest"
 }
 
 // Logs returns the last n lines from a service, as a single string.

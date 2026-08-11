@@ -301,7 +301,7 @@ func (e *Engine) execThrowaway(ctx context.Context, service string, argv manifes
 		return 0, "", err
 	}
 
-	id, err := e.create(ctx, service+"-task", &tmp, argv)
+	id, err := e.createFor(ctx, service+"-task", service, &tmp, argv)
 	if err != nil {
 		return 0, "", err
 	}
@@ -312,7 +312,7 @@ func (e *Engine) execThrowaway(ctx context.Context, service string, argv manifes
 		// mutating a running container, which Docker does not allow.
 		_ = e.remove(context.WithoutCancel(ctx), id)
 		tmp.Env = mergeEnv(s.Env, env)
-		if id, err = e.create(ctx, service+"-task", &tmp, argv); err != nil {
+		if id, err = e.createFor(ctx, service+"-task", service, &tmp, argv); err != nil {
 			return 0, "", err
 		}
 		defer e.remove(context.WithoutCancel(ctx), id)

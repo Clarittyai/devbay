@@ -26,9 +26,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,6 +99,8 @@ func Detect(ctx context.Context, dir string) (*Result, error) {
 	d.fromPython()
 	d.fromGo()
 
+	d.inferToolchain()
+	d.openDjangoHosts()
 	d.rewireEnv()
 	d.inferHealth()
 	d.choosePrimary()
@@ -154,6 +158,52 @@ func (d *detector) composeBuild(svc composetypes.ServiceConfig) *manifest.Build 
 	return b
 }
 
+// composeSecrets turns a service's compose secrets into file mounts.
+//
+// Docker places a secret at /run/secrets/<name> and applications read it from
+// there, so the mount is the transcription: same path, same contents, same
+// behaviour. Only file-backed secrets can be transcribed this way -- an
+// environment-backed one is a value devbay must not copy into a manifest,
+// which is what `${secret:...}` exists for -- and the difference is reported
+// rather than silently dropped.
+func (d *detector) composeSecrets(project *composetypes.Project, svc composetypes.ServiceConfig, path string) []manifest.Mount {
+	var out []manifest.Mount
+	for _, ref := range svc.Secrets {
+		def, ok := project.Secrets[ref.Source]
+		if !ok {
+			d.gap("service %q uses secret %q, which the compose file does not define", svc.Name, ref.Source)
+			continue
+		}
+		target := ref.Target
+		if target == "" {
+			target = "/run/secrets/" + ref.Source
+		} else if !strings.HasPrefix(target, "/") {
+			target = "/run/secrets/" + target
+		}
+		switch {
+		case def.File != "":
+			src := def.File
+			if !strings.HasPrefix(src, "./") && !strings.HasPrefix(src, "/") {
+				src = "./" + src
+			}
+			if strings.HasPrefix(src, "/") || strings.Contains(src, "..") {
+				// A mount source outside the repository would be refused by
+				// the validator, so a manifest carrying it could never boot.
+				d.gap("service %q reads secret %q from %s, which is outside the repository; "+
+					"mount it yourself or use ${secret:...}", svc.Name, ref.Source, def.File)
+				continue
+			}
+			out = append(out, manifest.Mount{Source: src, Target: target})
+		case def.Environment != "":
+			d.gap("service %q reads secret %q from the environment; devbay does not copy credentials "+
+				"into a manifest -- give it as ${secret:%s} in `env:`", svc.Name, ref.Source, ref.Source)
+		default:
+			d.gap("service %q uses secret %q, which names no file devbay can mount", svc.Name, ref.Source)
+		}
+	}
+	return out
+}
+
 // composeMounts transcribes the host bind mounts a compose service declares.
 //
 // Only binds whose source is inside the repository. A named volume is a
@@ -185,6 +235,41 @@ func (d *detector) composeMounts(svc composetypes.ServiceConfig) []manifest.Moun
 			src = "./" + src
 		}
 		out = append(out, manifest.Mount{Source: src, Target: v.Target})
+	}
+	return out
+}
+
+// composeShadowed transcribes the anonymous volumes a compose file uses to
+// protect a directory from the bind mount over it.
+//
+// `- /project/node_modules` with no source is the standard dev-compose idiom:
+// the line above bind-mounts the source tree, which would otherwise hide the
+// dependencies the image installed at build time, and the anonymous volume
+// puts them back. Dropping it leaves an application whose dependencies have
+// vanished -- `ng serve` exits 1, `npm start` cannot find its entry point --
+// with nothing in the log that points at a mount.
+//
+// It maps onto devbay's `volumes:`, which exists for the same reason and is
+// also the answer to bind-mount performance on macOS.
+func (d *detector) composeShadowed(svc composetypes.ServiceConfig, mounts []manifest.Mount) []string {
+	var out []string
+	for _, v := range svc.Volumes {
+		if v.Source != "" || v.Target == "" || v.Target == "/" {
+			continue
+		}
+		// Only meaningful when it sits inside a directory this service also
+		// bind-mounts; anywhere else it is ordinary container-local storage
+		// and devbay's own volume handling already covers it.
+		for _, m := range mounts {
+			rel, err := filepath.Rel(m.Target, v.Target)
+			if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+				continue
+			}
+			// Absolute, so it lands inside the bind mount it is protecting
+			// rather than inside the workspace.
+			out = append(out, filepath.ToSlash(v.Target))
+			break
+		}
 	}
 	return out
 }
@@ -441,7 +526,38 @@ func (d *detector) fromCompose(ctx context.Context) {
 					s.Env[k] = *v
 				}
 			}
-			if mounts := d.composeMounts(svc); len(mounts) > 0 {
+			// The command is what the service actually runs. compose-go has
+			// already split it into an argv array -- devbay never does that
+			// splitting itself -- so transcribing it preserves R1 exactly:
+			// the same words, exec'd, with no shell anywhere. Dropping it
+			// meant a service started with its image's default command, which
+			// for prometheus is a different config file and for mariadb a
+			// different authentication plugin.
+			if len(svc.Command) > 0 {
+				s.Start = manifest.Argv(svc.Command)
+				d.note(SourceCompose, path, fmt.Sprintf("service %q runs %s", name, strings.Join(svc.Command, " ")))
+			}
+			if len(svc.Entrypoint) > 0 {
+				d.gap("service %q overrides its image entrypoint (%s); devbay has no entrypoint field, "+
+					"so fold it into `start:` or into the image", name, strings.Join(svc.Entrypoint, " "))
+			}
+
+			// Compose secrets are files, and the services that use them do not
+			// start without them: a database told to read its root password
+			// from /run/secrets/db-password exits immediately when the path is
+			// not there. Dropping them produced a manifest that transcribed
+			// the environment variable naming the file and not the file, which
+			// is the most confusing possible half-transcription -- everything
+			// looks right and the database dies on boot.
+			binds := d.composeMounts(svc)
+			if shadowed := d.composeShadowed(svc, binds); len(shadowed) > 0 {
+				s.Volumes = shadowed
+				d.note(SourceCompose, path, fmt.Sprintf("service %q keeps %s out of the bind mount",
+					name, strings.Join(shadowed, ", ")))
+			}
+			secrets := d.composeSecrets(project, svc, path)
+			mounts := append(binds, secrets...)
+			if len(mounts) > 0 {
 				s.Mounts = mounts
 				for _, mt := range mounts {
 					d.note(SourceCompose, path,
@@ -462,6 +578,16 @@ func (d *detector) fromCompose(ctx context.Context) {
 			}
 			for _, dep := range sortedKeysOf(svc.DependsOn) {
 				s.Needs = append(s.Needs, slug(dep))
+			}
+
+			// Transcribed, because it is load-bearing. A compose file that
+			// cannot express "web starts after redis is answering" writes
+			// `restart: on-failure` instead, and dropping it turns a stack
+			// that recovers from its own startup race into one that dies.
+			if r := manifest.Restart(svc.Restart); r != "" && r.Valid() {
+				s.Restart = r
+				d.note(SourceCompose, path,
+					fmt.Sprintf("service %q restarts %s", name, r))
 			}
 			d.m.Services[name] = s
 			if s.Build == nil {
@@ -697,7 +823,6 @@ func (d *detector) fromProcfile() {
 			}
 			d.m.Services[key] = s
 			d.note(SourceProcfile, path, fmt.Sprintf("process %q runs %s", key, strings.Join(argv, " ")))
-			d.gap("service %q from %s has no image; set one that provides its toolchain", key, name)
 		}
 		return
 	}
@@ -805,12 +930,27 @@ func (d *detector) fromPython() {
 			d.note(SourcePython, filepath.Join(d.dir, "manage.py"), "Django: runserver on 8000")
 			d.gap("service \"web\" has no image; set one providing Python")
 		}
-		if d.m.Tasks["migrate"] == nil {
+		if d.m.Services["migrate"] == nil {
 			d.m.Services["migrate"] = &manifest.Service{
 				Kind: manifest.KindOneshot,
 				Run:  manifest.Argv{"python", "manage.py", "migrate", "--no-input"},
 			}
 			d.note(SourcePython, filepath.Join(d.dir, "manage.py"), "Django: migrations as a oneshot")
+			d.dependOn("migrate")
+		}
+		// collectstatic only when the project has somewhere to collect to.
+		// Django raises without STATIC_ROOT, so running it unconditionally
+		// would break every project that does not use it -- and skipping it
+		// breaks every project that does, with a 500 from a missing manifest
+		// entry that reads like an application bug.
+		if d.grepRepo("STATIC_ROOT") && d.m.Services["collectstatic"] == nil {
+			d.m.Services["collectstatic"] = &manifest.Service{
+				Kind: manifest.KindOneshot,
+				Run:  manifest.Argv{"python", "manage.py", "collectstatic", "--no-input"},
+			}
+			d.note(SourcePython, filepath.Join(d.dir, "manage.py"),
+				"Django: collectstatic as a oneshot, because the settings declare STATIC_ROOT")
+			d.dependOn("collectstatic")
 		}
 	}
 	for _, f := range []string{"pyproject.toml", "requirements.txt"} {
@@ -826,6 +966,145 @@ func (d *detector) fromPython() {
 			return
 		}
 	}
+}
+
+// djangoHostEnv finds the environment variable a settings module reads its
+// allowed hosts from.
+var djangoHostEnv = regexp.MustCompile(
+	`ALLOWED_HOSTS\s*=\s*[a-zA-Z_.]*\(?\s*["']?([A-Z_]*ALLOWED_HOSTS?[A-Z_]*)["']`)
+
+// openDjangoHosts lets the bay's own hostname through Django's allowlist.
+//
+// A bay's browser origin is the point of the whole tool, and Django answers it
+// with 400 because ALLOWED_HOSTS does not contain it -- while devbay's own
+// health probe, which uses 127.0.0.1, sees 200 and reports the bay healthy.
+// The developer opens the URL devbay printed and gets a bad request from an
+// application that is working.
+//
+// devbay only does this when the settings file says it reads the value from
+// the environment, and only into the variable it names. That is transcription:
+// the repository states where the setting comes from, and devbay fills it in.
+// A project that hardcodes its ALLOWED_HOSTS is left alone and told why.
+func (d *detector) openDjangoHosts() {
+	web := d.m.Services["web"]
+	if web == nil {
+		return
+	}
+	var name string
+	_ = filepath.WalkDir(d.dir, func(p string, de fs.DirEntry, err error) error {
+		if err != nil || name != "" {
+			return nil
+		}
+		if de.IsDir() {
+			switch de.Name() {
+			case ".git", "node_modules", ".venv", "venv", "__pycache__":
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if de.Name() != "settings.py" {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		if m := djangoHostEnv.FindSubmatch(b); m != nil {
+			name = string(m[1])
+		}
+		return nil
+	})
+	if name == "" {
+		d.gap("if this project restricts ALLOWED_HOSTS, add ${bay.web.public_host} to it or the bay's " +
+			"own hostname will answer 400 in a browser")
+		return
+	}
+	if web.Env == nil {
+		web.Env = map[string]string{}
+	}
+	if _, set := web.Env[name]; set {
+		return
+	}
+	// 127.0.0.1 and localhost stay in the list because that is the address
+	// devbay's own health probe uses -- Go cannot resolve *.localhost -- and a
+	// list holding only the bay hostname would make every boot fail.
+	web.Env[name] = "${bay.web.public_host},localhost,127.0.0.1"
+	d.note(SourcePython, "settings.py",
+		fmt.Sprintf("Django: %s is read from the environment, so the bay's own hostname is added to it", name))
+}
+
+// dependOn makes the long-running services wait for a setup step.
+//
+// Without this the oneshot is in the manifest and nothing waits for it, so the
+// application starts against an unmigrated database and fails in a way that
+// has nothing to do with the real cause.
+func (d *detector) dependOn(step string) {
+	for name, s := range d.m.Services {
+		if name == step || s.IsOneshot() {
+			continue
+		}
+		if !contains(s.Needs, step) {
+			s.Needs = append(s.Needs, step)
+		}
+	}
+}
+
+// grepRepo reports whether any Python file in the tree mentions a setting.
+// Bounded to the files a settings module would live in, because this runs on
+// repositories of unknown size.
+func (d *detector) grepRepo(needle string) bool {
+	found := false
+	var seen int
+	_ = filepath.WalkDir(d.dir, func(p string, de fs.DirEntry, err error) error {
+		if err != nil || found || seen > 2000 {
+			return nil
+		}
+		if de.IsDir() {
+			switch de.Name() {
+			case ".git", "node_modules", ".venv", "venv", "__pycache__", "static", "staticfiles":
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(p) != ".py" {
+			return nil
+		}
+		seen++
+		b, err := os.ReadFile(p)
+		if err == nil && strings.Contains(string(b), needle) {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
+func contains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// nonHTTPPorts are the registered ports of protocols that are not HTTP.
+//
+// Deliberately a list of known wire protocols rather than a list of known HTTP
+// ports: an application can serve HTTP on anything, so the safe default for an
+// unrecognised port is to assume HTTP and let the probe say otherwise. These
+// are the ones where that assumption is known to be wrong.
+var nonHTTPPorts = map[int]string{
+	5432: "postgres", 3306: "mysql", 6379: "redis", 27017: "mongodb",
+	5672: "amqp", 9092: "kafka", 11211: "memcached", 1025: "smtp",
+	25: "smtp", 587: "smtp", 5044: "beats", 9300: "elasticsearch transport",
+	2181: "zookeeper", 1433: "mssql", 5433: "postgres", 26257: "cockroach",
+	7000: "cassandra", 9042: "cassandra", 6432: "pgbouncer", 22: "ssh",
+}
+
+func speaksHTTP(port int) bool {
+	_, known := nonHTTPPorts[port]
+	return !known
 }
 
 func (d *detector) fromGo() {
@@ -862,7 +1141,11 @@ var knownHealth = []struct {
 	{"mariadb", manifest.Health{Cmd: manifest.Argv{"mysqladmin", "ping"}}},
 	{"redis", manifest.Health{Cmd: manifest.Argv{"redis-cli", "ping"}}},
 	{"valkey", manifest.Health{Cmd: manifest.Argv{"redis-cli", "ping"}}},
-	{"mongo", manifest.Health{Cmd: manifest.Argv{"mongosh", "--eval", "db.runCommand('ping')"}}},
+	// mongosh only exists from MongoDB 5.0; before that the shell is `mongo`,
+	// and a probe that is absent from the image reads as a database that never
+	// came up. A TCP probe is weaker and works on every version, which is the
+	// better trade for something devbay guessed rather than read.
+	{"mongo", manifest.Health{TCP: 27017}},
 	{"rabbitmq", manifest.Health{Cmd: manifest.Argv{"rabbitmq-diagnostics", "ping"}}},
 	{"elasticsearch", manifest.Health{HTTP: "/_cluster/health"}},
 	{"opensearch", manifest.Health{HTTP: "/_cluster/health"}},
@@ -890,6 +1173,16 @@ func (d *detector) inferHealth() {
 		if s.Health != nil {
 			continue
 		}
+		if s.Port != 0 && !speaksHTTP(s.Port) {
+			// A port devbay can name is a port it knows the protocol of, and
+			// `GET /` against a wire protocol does not fail quickly or
+			// clearly: it hangs until the timeout and reports EOF. A TCP probe
+			// asks the only question that makes sense there.
+			s.Health = &manifest.Health{TCP: s.Port, Timeout: "60s"}
+			d.note(SourceConvention, "",
+				fmt.Sprintf("health probe for %q is a TCP connect; %d is not an HTTP port", name, s.Port))
+			continue
+		}
 		if s.Port != 0 {
 			// An HTTP probe on the declared port is the best guess for an
 			// application, and the path is the part most likely to be wrong.
@@ -910,21 +1203,102 @@ func (d *detector) choosePrimary() {
 			ported = append(ported, name)
 		}
 	}
-	if len(ported) <= 1 {
-		return // inferred, or nothing to choose between
+	if len(ported) == 0 {
+		return
 	}
-	// Prefer the obvious application names over a datastore.
-	for _, want := range []string{"web", "app", "frontend", "api", "server"} {
-		for _, name := range ported {
-			if name == want {
-				d.m.Services[name].Primary = true
-				d.note(SourceConvention, "", fmt.Sprintf("%q claims the bay hostname", name))
+	if len(ported) == 1 {
+		return // inferred elsewhere; nothing to choose between
+	}
+
+	claim := func(name, why string) {
+		d.m.Services[name].Primary = true
+		d.note(SourceConvention, "", fmt.Sprintf("%q claims the bay hostname: %s", name, why))
+	}
+
+	// A datastore is never the primary. It has a port, it often sorts first,
+	// and picking it points the bay's own hostname at postgres -- which is how
+	// a developer opens their bay and gets a blank 502 from a database that is
+	// working perfectly. This is a negative signal rather than a positive one
+	// on purpose: devbay can recognise a database far more reliably than it
+	// can recognise an application.
+	var apps []string
+	for _, name := range ported {
+		if !datastore(d.m.Services[name].Image) {
+			apps = append(apps, name)
+		}
+	}
+	if len(apps) == 0 {
+		// Every service is a datastore, so the developer is running a stack
+		// with no application in it and any choice is arbitrary.
+		claim(ported[0], "every service is a datastore")
+		return
+	}
+	if len(apps) == 1 {
+		claim(apps[0], "the only service that is not a datastore")
+		return
+	}
+
+	// Nothing depends on the front of the stack. A proxy sits in front of the
+	// application, the application in front of the database, and the thing a
+	// browser should be pointed at is the one at the top -- which the
+	// dependency graph already states.
+	depended := map[string]bool{}
+	for _, s := range d.m.Services {
+		for _, n := range s.Needs {
+			depended[n] = true
+		}
+	}
+	var tops []string
+	for _, name := range apps {
+		if !depended[name] {
+			tops = append(tops, name)
+		}
+	}
+	if len(tops) == 1 {
+		claim(tops[0], "nothing depends on it, so it is the front of the stack")
+		return
+	}
+	if len(tops) > 1 {
+		apps = tops
+	}
+
+	// A conventional web port beats a conventional name, because a repository
+	// can call its web service anything and still serve it on 80.
+	for _, want := range []int{80, 443, 8080, 3000, 8000, 5000, 4200, 5173} {
+		for _, name := range apps {
+			if d.m.Services[name].Port == want {
+				claim(name, fmt.Sprintf("it serves on %d", want))
 				return
 			}
 		}
 	}
-	d.m.Services[ported[0]].Primary = true
-	d.gap("several services expose a port; %q was made primary, which may be wrong", ported[0])
+	for _, want := range []string{"web", "app", "frontend", "client", "ui", "api", "server", "proxy", "nginx"} {
+		for _, name := range apps {
+			if name == want {
+				claim(name, "its name says so")
+				return
+			}
+		}
+	}
+	d.m.Services[apps[0]].Primary = true
+	d.gap("several services expose a port; %q was made primary, which may be wrong", apps[0])
+}
+
+// datastore reports whether an image is a database, cache or broker.
+//
+// Read off the same table that supplies their health probes: an image devbay
+// knows how to ask "are you ready" is one it knows is not the application.
+func datastore(image string) bool {
+	base := imageBase(image)
+	// Mailpit and minio are in the table too. They have browsable interfaces
+	// and are still not what the developer opened the bay to look at, so they
+	// are excluded on the same grounds as postgres.
+	for _, k := range knownHealth {
+		if strings.HasPrefix(base, k.prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // startable reports whether an image is expected to run without an explicit

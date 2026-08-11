@@ -88,6 +88,22 @@ func (e *Engine) waitHealthy(ctx context.Context, name, id string, s *manifest.S
 			return err
 		}
 		if !alive {
+			// A service Docker will restart has not failed yet. Real compose
+			// files use `restart: on-failure` where they cannot express a
+			// dependency -- a web service racing the cache it talks to -- and
+			// treating the first exit as fatal makes devbay fail on stacks
+			// that work under compose. The health timeout is still the bound:
+			// a service that crash-loops for its whole timeout reports the
+			// last thing the probe saw, and the log tail says why.
+			if restarting(s, code) {
+				last = fmt.Errorf("exited with code %d and is being restarted", code)
+				select {
+				case <-ticker.C:
+					continue
+				case <-ctx.Done():
+					return expired()
+				}
+			}
 			return fmt.Errorf("container exited with code %d before becoming healthy", code)
 		}
 
@@ -106,6 +122,22 @@ func (e *Engine) waitHealthy(ctx context.Context, name, id string, s *manifest.S
 			return expired()
 		}
 	}
+}
+
+// restarting reports whether Docker will bring this service back by itself.
+//
+// The exit code matters: `on-failure` does not restart a container that exited
+// zero, so a service that quits cleanly under that policy is finished. Saying
+// "is being restarted" about a container nothing will restart sends the
+// developer to wait for something that is never going to happen.
+func restarting(s *manifest.Service, code int) bool {
+	switch s.Restart {
+	case manifest.RestartAlways, manifest.RestartUnlessStopped:
+		return true
+	case manifest.RestartOnFailure:
+		return code != 0
+	}
+	return false
 }
 
 // probeOnce runs a single non-streaming probe.
@@ -248,6 +280,15 @@ func (e *Engine) probeExec(ctx context.Context, id string, argv manifest.Argv) e
 		if !ins.Running {
 			if ins.ExitCode == 0 {
 				return nil
+			}
+			if ins.ExitCode == 127 {
+				// Not an unhealthy service: a probe that is not in the image.
+				// Exit 127 is the shell's "command not found", and the two
+				// have opposite fixes -- one is the developer's application,
+				// the other is this line of their manifest. Saying "exited
+				// 127" leaves them debugging a database that is fine.
+				return fmt.Errorf("the probe command %q is not present in this image; "+
+					"change health: for this service (tcp: <port> always works)", argv[0])
 			}
 			return fmt.Errorf("probe command exited %d", ins.ExitCode)
 		}

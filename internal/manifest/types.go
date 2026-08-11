@@ -125,6 +125,27 @@ const (
 	WatchRebuild WatchAction = "rebuild"
 )
 
+// Restart is a container restart policy, spelled the way Docker spells it.
+type Restart string
+
+const (
+	// RestartNo is the default: a service that exits stays exited, and the
+	// boot reports it. Anything else hides a crash loop behind a healthy bay.
+	RestartNo            Restart = "no"
+	RestartOnFailure     Restart = "on-failure"
+	RestartAlways        Restart = "always"
+	RestartUnlessStopped Restart = "unless-stopped"
+)
+
+// Valid reports whether r is a policy Docker accepts.
+func (r Restart) Valid() bool {
+	switch r {
+	case "", RestartNo, RestartOnFailure, RestartAlways, RestartUnlessStopped:
+		return true
+	}
+	return false
+}
+
 // Service is a container in a bay.
 type Service struct {
 	Kind  Kind   `yaml:"kind,omitempty"`
@@ -149,6 +170,17 @@ type Service struct {
 
 	Start Argv `yaml:"start,omitempty"` // long-running services
 	Run   Argv `yaml:"run,omitempty"`   // oneshots
+
+	// Restart is what to do when the process exits.
+	//
+	// Present because real compose files depend on it. A stack whose web
+	// service talks to a cache it does not declare a dependency on races the
+	// cache at startup, and the compose file handles that with
+	// `restart: on-failure` rather than with depends_on -- which means
+	// transcribing the file without this field produces a stack that dies
+	// where the original recovers. devbay cannot infer the missing dependency
+	// from the file, so it honours the mechanism the file actually uses.
+	Restart Restart `yaml:"restart,omitempty"`
 
 	// Port is the primary port: the one that gets a hostname and, unless
 	// overridden, the one an http probe targets. Exactly one exists per

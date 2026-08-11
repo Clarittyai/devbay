@@ -192,7 +192,7 @@ func (r *Resolver) Endpoint(service string, plane Plane) (Endpoint, error) {
 // refPattern matches one permitted reference. The grammar is enforced by the
 // manifest validator; this only locates and decomposes.
 var refPattern = regexp.MustCompile(
-	`\$\{(?:bay\.([a-z0-9-]+)\.(url|public_url|host|port|name|user|password|ports\.[a-z0-9-]+)|secret:([A-Za-z0-9/_.:-]+))\}`)
+	`\$\{(?:bay\.([a-z0-9-]+)\.(url|public_url|public_host|host|port|name|user|password|ports\.[a-z0-9-]+)|secret:([A-Za-z0-9/_.:-]+))\}`)
 
 // ResolveEnv renders a service's environment for the given plane.
 //
@@ -277,6 +277,13 @@ func (r *Resolver) field(svc, field string, plane Plane) (string, error) {
 	case "public_url":
 		// Always the browser origin, whoever is asking.
 		return r.Scheme + "://" + r.Hostname(svc), nil
+	case "public_host":
+		// The browser hostname with no scheme. Exists because frameworks keep
+		// an allowlist of hostnames they will answer for -- Django's
+		// ALLOWED_HOSTS, Rails' config.hosts -- and those settings take a
+		// hostname, not a URL. Without it the only way to fill one in is to
+		// hardcode the bay's name, which stops being true for the next bay.
+		return r.Hostname(svc), nil
 	case "host":
 		ep, err := r.Endpoint(svc, plane)
 		return ep.Host, err
