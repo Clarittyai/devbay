@@ -556,3 +556,14 @@ func (m *Manager) BranchHasWork(branch string) bool {
 	}
 	return strings.TrimSpace(out) != "0"
 }
+
+// Prune reconciles git's record with what is on disk.
+//
+// Exported because a caller that removes a worktree directory itself -- the
+// remains of an interrupted create, which git never registered -- leaves git's
+// administrative files behind, and the next create fails for a different
+// reason than the first.
+func (m *Manager) Prune() error {
+	_, err := git(m.RepoRoot, "worktree", "prune")
+	return err
+}

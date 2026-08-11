@@ -614,6 +614,16 @@ func (m *Manager) Describe(ctx context.Context, b *Bay) (Info, error) {
 func (m *Manager) Destroy(ctx context.Context, name string, force bool) error {
 	b, ok := m.Get(name)
 	if !ok {
+		// A bay devbay has no record of may still have left something on
+		// disk: `devbay new` creates the worktree before anything else, so an
+		// interrupted one leaves a directory that git does not know about and
+		// that the next `new` with the same name refuses to write over. With
+		// nothing here to clear it, that name is unusable for good -- and the
+		// obvious command to reach for is the one that just said the bay does
+		// not exist.
+		if force && m.clearStrandedWorktree(name) {
+			return nil
+		}
 		return fmt.Errorf("bay: %q does not exist", name)
 	}
 
@@ -675,6 +685,33 @@ func (m *Manager) Destroy(ctx context.Context, name string, force bool) error {
 	delete(m.bays, name)
 	m.mu.Unlock()
 	return errors.Join(errs...)
+}
+
+// clearStrandedWorktree removes the remains of an interrupted create.
+//
+// Only what devbay itself would have made: a directory under its own worktree
+// root, for this project, with no bay record pointing at it. Anything the
+// developer put there lives somewhere else.
+func (m *Manager) clearStrandedWorktree(name string) bool {
+	root := m.wt.Root
+	if root == "" {
+		return false
+	}
+	// Root already ends in this repository's directory, which is what Create
+	// joins the bay name onto.
+	path := filepath.Join(root, name)
+	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
+		return false
+	}
+	m.Log("bay: %q is not a bay, but %s is left over from an interrupted create; removing it", name, path)
+	if err := os.RemoveAll(path); err != nil {
+		m.Log("bay: could not remove %s: %v", path, err)
+		return false
+	}
+	// git keeps its own record of a worktree, and a stale one makes the next
+	// create fail for a different reason than the first.
+	_ = m.wt.Prune()
+	return true
 }
 
 // Focus moves the canonical hostname to one bay and takes it from the others.
