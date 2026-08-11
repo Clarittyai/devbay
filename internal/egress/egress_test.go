@@ -179,7 +179,7 @@ func bayNetwork(t *testing.T, cli *client.Client, ctx context.Context, name stri
 	_, _ = cli.NetworkRemove(ctx, netName, client.NetworkRemoveOptions{})
 	if _, err := cli.NetworkCreate(ctx, netName, client.NetworkCreateOptions{
 		Driver: "bridge",
-		Labels: map[string]string{"dev.devbay.test": "1"},
+		Labels: map[string]string{testLabel: "1"},
 	}); err != nil {
 		t.Fatalf("creating %s: %v", netName, err)
 	}
@@ -209,7 +209,7 @@ func subject(t *testing.T, cli *client.Client, ctx context.Context, name, netNam
 		Config: &container.Config{
 			Image:  subjectImage,
 			Cmd:    []string{"sleep", "300"},
-			Labels: map[string]string{"dev.devbay.test": "1"},
+			Labels: map[string]string{testLabel: "1"},
 		},
 		NetworkingConfig: &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{netName: {}},
@@ -418,23 +418,49 @@ func TestApplyingTwiceIsStable(t *testing.T) {
 	}
 }
 
+// testLabel marks what this package created, and is deliberately unique to it.
+//
+// The sweep below runs machine-wide, and `go test ./...` runs packages
+// concurrently: a label shared with another package's tests means this one
+// deletes that one's containers and networks out from under it, mid-run. That
+// is exactly what happened -- the proxy package used the same generic
+// `dev.devbay.test`, and its bays lost their networks partway through a test
+// whose own logic was fine. The symptom appeared far from the cause, in a
+// different package, and only on a machine slow enough for the runs to
+// overlap.
+const testLabel = "dev.devbay.test.egress"
+
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if cli, err := client.New(client.FromEnv, client.WithAPIVersionNegotiation()); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		for _, label := range []string{"dev.devbay.test=1", "dev.devbay.egress=1"} {
-			f := make(client.Filters).Add("label", label)
-			if cs, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: f}); err == nil {
-				for _, c := range cs.Items {
-					_, _ = cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true})
-				}
-			}
-			if ns, err := cli.NetworkList(ctx, client.NetworkListOptions{Filters: f}); err == nil {
-				for _, n := range ns.Items {
-					_, _ = cli.NetworkRemove(ctx, n.ID, client.NetworkRemoveOptions{})
-				}
+
+		f := make(client.Filters).Add("label", testLabel+"=1")
+		if cs, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: f}); err == nil {
+			for _, c := range cs.Items {
+				_, _ = cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true})
 			}
 		}
+		if ns, err := cli.NetworkList(ctx, client.NetworkListOptions{Filters: f}); err == nil {
+			for _, n := range ns.Items {
+				_, _ = cli.NetworkRemove(ctx, n.ID, client.NetworkRemoveOptions{})
+			}
+		}
+
+		// Sidecars are devbay's own and carry a product label, so they cannot
+		// be marked as belonging to these tests. Only finished ones are swept:
+		// a running sidecar is applying a policy for a test somewhere else,
+		// and removing it would make that test fail for no visible reason.
+		sf := make(client.Filters).Add("label", "dev.devbay.egress=1")
+		if cs, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: sf}); err == nil {
+			for _, c := range cs.Items {
+				if c.State == "running" || c.State == "created" {
+					continue
+				}
+				_, _ = cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true})
+			}
+		}
+
 		cancel()
 		cli.Close()
 	}
