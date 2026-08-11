@@ -87,11 +87,11 @@ func TestTheBuildTagFollowsTheContent(t *testing.T) {
 	e := engineAt(t, dir)
 
 	write("FROM alpine\n")
-	first, err := e.buildTag("web", dir, "Dockerfile", "")
+	first, err := e.buildTag("web", dir, "Dockerfile", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := e.buildTag("web", dir, "Dockerfile", "")
+	again, err := e.buildTag("web", dir, "Dockerfile", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestTheBuildTagFollowsTheContent(t *testing.T) {
 	}
 
 	write("FROM alpine\nRUN true\n")
-	changed, err := e.buildTag("web", dir, "Dockerfile", "")
+	changed, err := e.buildTag("web", dir, "Dockerfile", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestTheBuildTagFollowsTheContent(t *testing.T) {
 	}
 
 	// A different stage of the same Dockerfile is a different image.
-	target, err := e.buildTag("web", dir, "Dockerfile", "dev")
+	target, err := e.buildTag("web", dir, "Dockerfile", "dev", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestBuildArgumentsCannotSmuggleFlags(t *testing.T) {
 		{"ok:1", "--file=/etc/passwd", ""},
 		{"ok:1", "Dockerfile", "--privileged"},
 	} {
-		err := e.runBuild(context.Background(), "web", tc.tag, dir, tc.dockerfile, tc.target)
+		err := e.runBuild(context.Background(), "web", tc.tag, dir, tc.dockerfile, tc.target, nil)
 		if err == nil || !strings.Contains(err.Error(), "may not begin with a dash") {
 			t.Errorf("runBuild(%q,%q,%q) = %v; want a refusal", tc.tag, tc.dockerfile, tc.target, err)
 		}
@@ -419,5 +419,28 @@ tasks:
 	}
 	if got := serves(); got != "after" {
 		t.Errorf("served %q after the edit and reload; the change did not reach the container", got)
+	}
+}
+
+// The same tree built with different arguments is a different image, and
+// sharing one tag between them means the second bay silently runs the first
+// one's build -- with, for instance, the development dependencies missing.
+func TestBuildTagCoversBuildArguments(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM alpine:3.20\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{m: &manifest.Manifest{Project: "p"}}
+
+	dev, err := e.buildTag("web", dir, "Dockerfile", "", map[string]string{"NODE_ENV": "development"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prod, err := e.buildTag("web", dir, "Dockerfile", "", map[string]string{"NODE_ENV": "production"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev == prod {
+		t.Error("two builds with different arguments share a tag, so one silently serves the other")
 	}
 }

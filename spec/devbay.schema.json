@@ -287,6 +287,13 @@
                 "target": {
                   "type": "string",
                   "description": "Multi-stage build target. Dev stages are usually the right one."
+                },
+                "args": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Build arguments passed to the builder. These decide what is inside the image rather than merely how it is labelled - a Dockerfile that takes ARG NODE_ENV and runs an install skips the development dependencies on that one value - so they are part of the image's identity and changing one rebuilds it."
                 }
               }
             }

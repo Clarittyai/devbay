@@ -50,7 +50,7 @@ func (e *Engine) buildImage(ctx context.Context, name string, s *manifest.Servic
 	// reuses the previous build and a changed one does not. Docker's layer
 	// cache does the real work; this keeps the *tag* honest, so two bays on
 	// different branches never share one.
-	tag, err := e.buildTag(name, root, dockerfile, s.Build.Target)
+	tag, err := e.buildTag(name, root, dockerfile, s.Build.Target, s.Build.Args)
 	if err != nil {
 		return "", err
 	}
@@ -61,7 +61,7 @@ func (e *Engine) buildImage(ctx context.Context, name string, s *manifest.Servic
 
 	e.Log("  building %s from %s", name, rel(e.worktree, root))
 
-	if err := e.runBuild(ctx, name, tag, root, dockerfile, s.Build.Target); err != nil {
+	if err := e.runBuild(ctx, name, tag, root, dockerfile, s.Build.Target, s.Build.Args); err != nil {
 		return "", err
 	}
 	return tag, nil
@@ -105,13 +105,20 @@ func (e *Engine) buildContext(s *manifest.Service) (string, error) {
 }
 
 // buildTag names the image after the content it is built from.
-func (e *Engine) buildTag(service, root, dockerfile, target string) (string, error) {
+func (e *Engine) buildTag(service, root, dockerfile, target string, args map[string]string) (string, error) {
 	sum, err := hashTree(root)
 	if err != nil {
 		return "", err
 	}
 	h := sha256.New()
 	h.Write([]byte(sum + "\x00" + dockerfile + "\x00" + target))
+	// The arguments are part of the identity: the same tree built with
+	// NODE_ENV=development and NODE_ENV=production are two different images,
+	// and sharing one tag between them means the second bay silently runs the
+	// first one's build.
+	for _, k := range sortedKeys(args) {
+		h.Write([]byte("\x00" + k + "=" + args[k]))
+	}
 	digest := hex.EncodeToString(h.Sum(nil))[:12]
 	return fmt.Sprintf("devbay-%s-%s:%s", slugForTag(e.m.Project), slugForTag(service), digest), nil
 }
@@ -454,22 +461,30 @@ func (e *Engine) imageLabels(service string) map[string]string {
 // Every argument is passed as argv, with no shell anywhere near it, and the
 // values that come from the manifest are checked not to look like flags -- so
 // a crafted dockerfile or target name cannot turn itself into an option.
-func (e *Engine) runBuild(ctx context.Context, service, tag, root, dockerfile, target string) error {
+func (e *Engine) runBuild(ctx context.Context, service, tag, root, dockerfile, target string, args map[string]string) error {
 	for _, v := range []string{tag, dockerfile, target} {
 		if strings.HasPrefix(v, "-") {
 			return fmt.Errorf("build: %q may not begin with a dash", v)
+		}
+	}
+	for k, v := range args {
+		if strings.HasPrefix(k, "-") || strings.HasPrefix(v, "-") {
+			return fmt.Errorf("build: build argument %q=%q may not begin with a dash", k, v)
 		}
 	}
 
 	docker, err := exec.LookPath("docker")
 	if err != nil {
 		e.Log("    docker CLI not found; falling back to the daemon's classic builder, which cannot parse BuildKit syntax")
-		return e.buildViaAPI(ctx, service, tag, root, dockerfile, target)
+		return e.buildViaAPI(ctx, service, tag, root, dockerfile, target, args)
 	}
 
 	argv := []string{"build", "--file", filepath.Join(root, filepath.FromSlash(dockerfile)), "--tag", tag}
 	if target != "" {
 		argv = append(argv, "--target", target)
+	}
+	for _, k := range sortedKeys(args) {
+		argv = append(argv, "--build-arg", k+"="+args[k])
 	}
 	labels := e.imageLabels(service)
 	for _, k := range sortedKeys(labels) {
@@ -488,15 +503,20 @@ func (e *Engine) runBuild(ctx context.Context, service, tag, root, dockerfile, t
 }
 
 // buildViaAPI is the fallback for a machine with no docker CLI.
-func (e *Engine) buildViaAPI(ctx context.Context, service, tag, root, dockerfile, target string) error {
+func (e *Engine) buildViaAPI(ctx context.Context, service, tag, root, dockerfile, target string, args map[string]string) error {
 	tarball, err := tarDirectory(root)
 	if err != nil {
 		return fmt.Errorf("build: packing %s: %w", root, err)
+	}
+	buildArgs := make(map[string]*string, len(args))
+	for k, v := range args {
+		buildArgs[k] = &v
 	}
 	resp, err := e.cli.ImageBuild(ctx, tarball, client.ImageBuildOptions{
 		Tags:       []string{tag},
 		Dockerfile: dockerfile,
 		Target:     target,
+		BuildArgs:  buildArgs,
 		Remove:     true,
 		Labels:     e.imageLabels(service),
 	})

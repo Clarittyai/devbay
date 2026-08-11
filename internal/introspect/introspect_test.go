@@ -1042,3 +1042,33 @@ services:
 		t.Errorf("image = %q; devbay would try to pull the tag its own build produces", etl.Image)
 	}
 }
+
+// A build argument can decide what is inside the image. Dropping it produced
+// an image that built cleanly and then exited 127, because the command the
+// compose file runs was never installed.
+func TestComposeBuildArgsAreTranscribed(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"compose.yaml": `
+services:
+  backend:
+    build:
+      context: backend
+      target: development
+      args:
+        - NODE_ENV=development
+    command: npm run start-watch
+    ports: ["80:80"]
+`,
+		"backend/Dockerfile": "FROM node:22\nARG NODE_ENV\n",
+	})
+	res := detect(t, dir)
+	assertValid(t, res)
+
+	b := res.Manifest.Services["backend"].Build
+	if b == nil || b.Args["NODE_ENV"] != "development" {
+		t.Errorf("build args = %v; without NODE_ENV the install skips devDependencies", b)
+	}
+	if b.Target != "development" {
+		t.Errorf("target = %q, want development", b.Target)
+	}
+}

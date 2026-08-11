@@ -253,6 +253,13 @@ type Build struct {
 	Context    string `yaml:"context,omitempty"`
 	Dockerfile string `yaml:"dockerfile,omitempty"`
 	Target     string `yaml:"target,omitempty"`
+	// Args are build arguments, and they routinely decide what the image
+	// contains rather than merely how it is labelled: a Dockerfile that takes
+	// ARG NODE_ENV and runs `npm ci` installs the development dependencies or
+	// skips them on the strength of that one value. Dropping them produced an
+	// image that built successfully and then exited 127 because the command
+	// the compose file runs was never installed.
+	Args map[string]string `yaml:"args,omitempty"`
 }
 
 // UnmarshalYAML accepts `build: ./dir` as well as the full mapping.

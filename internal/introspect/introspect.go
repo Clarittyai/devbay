@@ -155,6 +155,24 @@ func (d *detector) composeBuild(svc composetypes.ServiceConfig) *manifest.Build 
 	if df := svc.Build.Dockerfile; df != "" && df != "Dockerfile" {
 		b.Dockerfile = df
 	}
+	// Build arguments decide what is inside the image, not just how it is
+	// labelled: a Dockerfile that takes ARG NODE_ENV and runs `npm ci`
+	// installs the development dependencies or skips them on that one value,
+	// and the image that skipped them builds cleanly and then exits 127
+	// because the command the compose file runs was never installed.
+	for k, v := range svc.Build.Args {
+		if v == nil || !safeEnvValue(*v) {
+			// A value devbay cannot vouch for is one it will not bake into an
+			// image and commit alongside the manifest.
+			d.gap("service %q builds with %s, whose value devbay did not carry over; set it in `build.args`",
+				svc.Name, k)
+			continue
+		}
+		if b.Args == nil {
+			b.Args = map[string]string{}
+		}
+		b.Args[k] = *v
+	}
 	return b
 }
 
