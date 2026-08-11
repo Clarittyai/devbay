@@ -31,7 +31,6 @@ import (
 // ecosystem is what a service is written in, as far as its start command and
 // the files beside it can say.
 type ecosystem struct {
-	name string
 	// image is the family; version is appended.
 	image string
 	// fallback is the version devbay uses when the repository names none.
@@ -49,11 +48,11 @@ type ecosystem struct {
 }
 
 var ecosystems = map[string]ecosystem{
-	"node":   {name: "node", image: "node", fallback: "22", suffix: "-alpine", parts: 1},
-	"python": {name: "python", image: "python", fallback: "3.12", suffix: "-slim", parts: 2},
-	"ruby":   {name: "ruby", image: "ruby", fallback: "3.3", suffix: "-slim", parts: 2},
-	"go":     {name: "go", image: "golang", fallback: "1.23", suffix: "", parts: 2},
-	"php":    {name: "php", image: "php", fallback: "8.3", suffix: "-cli", parts: 2},
+	"node":   {image: "node", fallback: "22", suffix: "-alpine", parts: 1},
+	"python": {image: "python", fallback: "3.12", suffix: "-slim", parts: 2},
+	"ruby":   {image: "ruby", fallback: "3.3", suffix: "-slim", parts: 2},
+	"go":     {image: "golang", fallback: "1.23", suffix: "", parts: 2},
+	"php":    {image: "php", fallback: "8.3", suffix: "-cli", parts: 2},
 }
 
 // commandEcosystem reads the ecosystem off the program being run.
