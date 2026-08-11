@@ -50,8 +50,17 @@ fmt-check: ## fail if anything is unformatted
 	@out=$$(gofmt -l $$(git ls-files '*.go')); \
 	if [ -n "$$out" ]; then echo "not gofmt'd:"; echo "$$out"; exit 1; fi
 
+.PHONY: tidy-check
+tidy-check: ## fail if go.mod is not tidy
+	@cp go.mod /tmp/devbay-go.mod.bak; cp go.sum /tmp/devbay-go.sum.bak; \
+	go mod tidy; \
+	if ! git diff --quiet -- go.mod go.sum; then \
+		cp /tmp/devbay-go.mod.bak go.mod; cp /tmp/devbay-go.sum.bak go.sum; \
+		echo "go.mod is not tidy; run: go mod tidy"; exit 1; \
+	fi
+
 .PHONY: check
-check: fmt-check vet build test-all race ## everything CI runs
+check: fmt-check vet tidy-check build test-all race ## everything CI runs
 
 .PHONY: schema
 schema: build ## print the manifest JSON Schema
