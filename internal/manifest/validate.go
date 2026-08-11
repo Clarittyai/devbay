@@ -165,6 +165,26 @@ func validateService(r *Result, m *Manifest, pat spec.Rules, name string, s *Ser
 			fmt.Sprintf("%q is a floating tag; pin by digest so a bay booted today and one booted next month are the same bay", s.Image))
 	}
 
+	// Fields the format describes and devbay does not yet honour are refused
+	// rather than ignored. A manifest that validates and is then silently not
+	// obeyed is the worst outcome available: the developer believes they have
+	// isolated a datastore, or bounded a fork, and nothing says otherwise.
+	if s.Scope == ScopeShared {
+		r.add(Error, "", at+"/scope",
+			"scope: shared is not implemented -- every service is per-bay. "+
+				"Remove it, or open an issue describing the shared service you need")
+	}
+	// A fork strategy only means anything for a service shared between bays.
+	// With the default per-bay scope each bay already has its own instance, so
+	// the field describes a decision that has already been made a stronger
+	// way. Said as a warning rather than an error because the manifest is not
+	// wrong -- it is describing an intent devbay satisfies differently.
+	if s.Fork != "" && s.Fork != ForkImage && s.Scope != ScopeShared {
+		r.add(Warn, "", at+"/fork",
+			fmt.Sprintf("fork: %s has no effect on a per-bay service; this bay has its own %s already",
+				s.Fork, name))
+	}
+
 	// Mounts. Checked here as well as at spawn time, so a manifest that could
 	// never run is rejected while it is being reviewed rather than while it is
 	// being executed.
@@ -230,9 +250,9 @@ func validateService(r *Result, m *Manifest, pat spec.Rules, name string, s *Ser
 		validateHealth(r, pat, at, s)
 	}
 
-	validateArgv(r, pat, at+"/install", s.Install)
-	validateArgv(r, pat, at+"/start", s.Start)
-	validateArgv(r, pat, at+"/run", s.Run)
+	validateArgvFrom(r, pat, at+"/install", s.Install, s.Provided)
+	validateArgvFrom(r, pat, at+"/start", s.Start, s.Provided)
+	validateArgvFrom(r, pat, at+"/run", s.Run, s.Provided)
 
 	if s.InstallScripts {
 		r.add(Warn, "", at+"/install_scripts",
@@ -399,6 +419,11 @@ func validateTask(r *Result, m *Manifest, pat spec.Rules, name string, t *Task) 
 
 // validateArgv enforces R1's non-structural half and R2.
 func validateArgv(r *Result, pat spec.Rules, at string, argv Argv) {
+	validateArgvFrom(r, pat, at, argv, false)
+}
+
+// validateArgvFrom knows whether the command came from the repository.
+func validateArgvFrom(r *Result, pat spec.Rules, at string, argv Argv, provided bool) {
 	if len(argv) == 0 {
 		return
 	}
@@ -410,7 +435,7 @@ func validateArgv(r *Result, pat spec.Rules, at string, argv Argv) {
 	// R2. Not an error: the command may be a committed, reviewable repo script
 	// such as bin/rspec. It is surfaced with the exact argv and approved once,
 	// keyed by that argv, so changing it re-prompts.
-	if !pat.Allowlist[argv[0]] {
+	if !pat.Allowlist[argv[0]] && !provided {
 		r.add2(Diagnostic{
 			Severity: Approval,
 			Rule:     "R2",

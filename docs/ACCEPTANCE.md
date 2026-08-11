@@ -37,6 +37,7 @@ something a developer could see for themselves.
 | M | Teardown is total | any container, volume, network, built image or worktree survives `devbay rm` |
 | N | Secrets do not leak | a planted credential appears in logs or in any MCP response |
 | O | Undeclared egress is blocked | a service with no `egress:` reaches the internet, or cannot reach its own bay's peers |
+| P | Emulators remove the need for credentials | a bay declaring `externals:` cannot exercise the dependency without a real key |
 
 Scenario J deliberately does not assert that application data survives. That is
 the application's business: this example's cache declares no volume, so losing

@@ -43,7 +43,7 @@
     },
     "externals": {
       "type": "object",
-      "description": "Third-party dependencies and how to satisfy them locally. The default is always an emulator; a real credential requires explicit per-bay human approval.",
+      "description": "Third-party dependencies satisfied locally by an emulator. Each becomes an ordinary service, so it gets a hostname, a health probe, an address other services can reference, and a teardown. Known emulators: mailpit (SMTP), stripe-mock, minio (S3). Anything else should be declared as a service.",
       "propertyNames": {
         "$ref": "#/$defs/slug"
       },
@@ -298,7 +298,7 @@
             "shared"
           ],
           "default": "bay",
-          "description": "`bay` is one instance per bay - the normal case, including datastores. `shared` is one instance total, forked per bay; use only when an instance is genuinely expensive to duplicate. Note that per-bay Postgres containers started from a seeded image cost roughly 30-50 MB each and give copy-on-write for free via the image layer, which is almost always better than sharing one instance and forking inside it."
+          "description": "How many instances of this service exist. Only `bay` is implemented -- every service runs once per bay, which is the isolation devbay exists to provide. `shared` is refused rather than ignored, because a manifest that validates and is then not obeyed is worse than one that fails."
         },
         "fork": {
           "enum": [
@@ -309,7 +309,7 @@
             "none"
           ],
           "default": "image",
-          "description": "How per-bay data isolation is achieved for a stateful service.\n\n  image    - DEFAULT. Migrations and seed data are baked into a per-project image at build time; each bay runs its own container from it and the container's writable layer provides copy-on-write. Instant, parallelisable, and teardown is a container removal, so a leaked fork is structurally impossible.\n  template - Postgres CREATE DATABASE ... TEMPLATE. Note this is a full O(size) physical copy, not copy-on-write: no other session may be connected to the template during the copy, so forks SERIALIZE, and a multi-gigabyte database takes tens of seconds each. Only choose this for a genuinely shared instance with a small dataset.\n  prefix   - key namespace prefix, for Redis and similar.\n  schema   - separate schema inside one database.\n  none     - genuinely shared with no isolation. Requires explicit opt-in and is warned about, because one bay's writes will be visible to every other."
+          "description": "How per-bay data isolation is achieved for a service shared between bays. Only meaningful with `scope: shared`, which is not implemented -- with the default per-bay scope each bay already has its own instance, and devbay warns that the field will not change anything."
         },
         "seed": {
           "type": "object",

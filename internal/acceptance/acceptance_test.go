@@ -160,19 +160,24 @@ func (e *env) post(host, path string) {
 	}
 }
 
-// docker counts resources devbay says it owns.
+// docker counts what this suite's project left behind.
+//
+// Scoped to the project rather than to everything devbay manages, because a
+// developer running this on their own machine has their own bays up, and a
+// suite that fails because of those is a suite they stop running.
 func docker(t *testing.T, kind string) int {
 	t.Helper()
+	const project = "label=dev.devbay.project=app"
 	var args []string
 	switch kind {
 	case "containers":
-		args = []string{"ps", "-aq", "--filter", "label=dev.devbay.managed"}
+		args = []string{"ps", "-aq", "--filter", project}
 	case "volumes":
-		args = []string{"volume", "ls", "-q", "--filter", "label=dev.devbay.managed"}
+		args = []string{"volume", "ls", "-q", "--filter", project}
 	case "networks":
-		args = []string{"network", "ls", "-q", "--filter", "label=dev.devbay.managed"}
+		args = []string{"network", "ls", "-q", "--filter", project}
 	case "images":
-		args = []string{"images", "-q", "--filter", "label=dev.devbay.managed=1"}
+		args = []string{"images", "-q", "--filter", project}
 	}
 	out, err := exec.Command("docker", args...).Output()
 	if err != nil {
@@ -422,4 +427,65 @@ func TestUndeclaredEgressIsBlocked(t *testing.T) {
 	if !reach("devbay-app-locked-cache:6379") {
 		t.Error("O: a service cannot reach its own bay's peers, so the policy is too tight to use")
 	}
+}
+
+// TestEmulatorsRemoveTheNeedForCredentials is scenario P.
+//
+// The claim behind `externals:` is that a bay can exercise a third-party
+// dependency with no credentials at all. It is worth its own scenario because
+// it is the one that decides whether a developer has to put a real key on
+// their machine to run a feature branch.
+func TestEmulatorsRemoveTheNeedForCredentials(t *testing.T) {
+	e := setup(t)
+
+	// A repository that sends mail, and nothing else about it changes.
+	if err := os.WriteFile(filepath.Join(e.repo, "devbay.yaml"), []byte(`version: 1
+project: mailer
+externals:
+  mail: {emulate: mailpit}
+services:
+  web:
+    image: nginx:alpine
+    port: 80
+    primary: true
+    health: {http: /}
+    env:
+      SMTP_HOST: ${bay.mail.host}
+      SMTP_PORT: ${bay.mail.ports.smtp}
+tasks:
+  unit: {run: ["true"], needs: []}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.git("add", "-A")
+	e.git("-c", "user.email=a@t", "-c", "user.name=a", "commit", "-qm", "mailer")
+
+	e.run("new", "mailbay")
+	t.Cleanup(func() { _, _ = e.try("rm", "mailbay", "--force") })
+
+	// The application was told where its mail goes, per bay.
+	host, err := exec.Command("docker", "exec", "devbay-mailer-mailbay-web", "printenv", "SMTP_HOST").Output()
+	if err != nil || strings.TrimSpace(string(host)) == "" {
+		t.Fatalf("P: the application was not given the mail catcher's address: %v", err)
+	}
+
+	// Sending mail into it works, from inside the bay's own network.
+	send := exec.Command("docker", "run", "--rm", "--network", "devbay-mailer-mailbay",
+		"alpine:3.20", "sh", "-c",
+		`printf "EHLO t\r\nMAIL FROM:<a@b>\r\nRCPT TO:<c@d>\r\nDATA\r\nSubject: acceptance\r\n\r\nbody\r\n.\r\nQUIT\r\n" `+
+			`| nc devbay-mailer-mailbay-mail 1025`)
+	if out, err := send.CombinedOutput(); err != nil || !strings.Contains(string(out), "250") {
+		t.Fatalf("P: could not send mail to the bay's catcher: %v\n%s", err, out)
+	}
+
+	// And it is readable at the bay's own hostname, which is what makes it
+	// usable rather than merely present.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, body := e.get("mail.mailbay.mailer.localhost", "/api/v1/messages"); strings.Contains(body, "acceptance") {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Error("P: the message never appeared in the bay's own mail catcher")
 }

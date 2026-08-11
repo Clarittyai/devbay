@@ -443,3 +443,161 @@ tasks:
 		t.Errorf("the quoted form was refused: %v", err)
 	}
 }
+
+// An emulator is devbay's own choice, so writing one down should not be
+// research: a developer asking for a mail catcher should not also have to know
+// which ports it listens on, and getting either wrong produces a bay that
+// boots and quietly cannot send mail.
+func TestExternalsBecomeServices(t *testing.T) {
+	m, err := Parse([]byte(`
+version: 1
+project: p
+externals:
+  mail: {emulate: mailpit}
+services:
+  web: {image: nginx:alpine, port: 80, primary: true, health: {http: /}}
+tasks:
+  unit: {run: ["true"], needs: []}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mail := m.Services["mail"]
+	if mail == nil {
+		t.Fatal("the external did not become a service, so nothing would start it")
+	}
+	if mail.Port == 0 || mail.Ports["smtp"] == 0 {
+		t.Errorf("the emulator's ports were not filled in: %+v", mail)
+	}
+	if mail.Health == nil {
+		t.Error("the emulator has no health probe, so devbay could not tell when it is ready")
+	}
+	// It has to survive validation as an ordinary service, because that is
+	// what it now is.
+	if r := Validate(m); len(r.Errors()) > 0 {
+		t.Errorf("an expanded emulator does not validate: %v", r.Err())
+	}
+	// And its argv is devbay's, not the repository's, so it must not ask the
+	// developer to approve a command they did not write.
+	for _, d := range Validate(m).Approvals() {
+		if strings.HasPrefix(d.Location(), "services/mail") {
+			t.Errorf("an emulator devbay chose asked for approval: %s", d.Msg)
+		}
+	}
+}
+
+func TestAnUnknownEmulatorIsRefusedWithTheList(t *testing.T) {
+	_, err := Parse([]byte(`
+version: 1
+project: p
+externals:
+  mail: {emulate: not-a-thing}
+services:
+  web: {image: nginx:alpine, port: 80, primary: true, health: {http: /}}
+tasks:
+  unit: {run: ["true"], needs: []}
+`))
+	if err == nil {
+		t.Fatal("an unknown emulator was accepted, so nothing would ever start it")
+	}
+	if !strings.Contains(err.Error(), "mailpit") {
+		t.Errorf("the message does not say what is available: %v", err)
+	}
+}
+
+// A service the repository writes out wins over the catalogue: the developer
+// has already made every decision it would have made for them.
+func TestAnExplicitServiceBeatsTheCatalogue(t *testing.T) {
+	m, err := Parse([]byte(`
+version: 1
+project: p
+externals:
+  mail: {emulate: mailpit}
+services:
+  mail: {image: axllent/mailpit:v1.20, port: 8025, health: {tcp: 8025}}
+  web: {image: nginx:alpine, port: 80, primary: true, health: {http: /}}
+tasks:
+  unit: {run: ["true"], needs: []}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Services["mail"].Image; got != "axllent/mailpit:v1.20" {
+		t.Errorf("the catalogue overwrote an explicit service: image = %q", got)
+	}
+}
+
+// A fork strategy only means anything for a service shared between bays, and
+// with the default per-bay scope each bay already has its own instance. The
+// manifest is not wrong, so this is a warning that says why the field will not
+// change anything -- silence would leave the developer believing they had
+// configured something.
+func TestAnInertForkStrategyIsExplained(t *testing.T) {
+	m, err := Parse([]byte(`
+version: 1
+project: p
+services:
+  cache:
+    image: redis:7-alpine
+    port: 6379
+    fork: prefix
+    health: {tcp: 6379}
+  web: {image: nginx:alpine, port: 80, primary: true, health: {http: /}}
+tasks:
+  unit: {run: ["true"], needs: []}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Validate(m)
+	if len(r.Errors()) > 0 {
+		t.Fatalf("a fork strategy should not be an error: %v", r.Err())
+	}
+	var explained bool
+	for _, d := range r.Warnings() {
+		if strings.Contains(d.Msg, "has no effect on a per-bay service") {
+			explained = true
+		}
+	}
+	if !explained {
+		t.Error("an inert fork strategy passed without a word, so it looks configured")
+	}
+}
+
+// Fields the format describes and devbay does not honour are refused rather
+// than ignored. A manifest that validates and is then silently not obeyed is
+// the worst outcome available: the developer believes they have isolated a
+// datastore and nothing says otherwise.
+func TestUnimplementedFieldsAreRefusedRatherThanIgnored(t *testing.T) {
+	for _, tc := range []struct{ name, mutate, expect string }{
+		{"shared scope", "    scope: shared\n", "not implemented"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := Parse([]byte(`
+version: 1
+project: p
+services:
+  db:
+    image: postgres:16
+    port: 5432
+    health: {tcp: 5432}
+` + tc.mutate + `  web: {image: nginx:alpine, port: 80, primary: true, health: {http: /}}
+tasks:
+  unit: {run: ["true"], needs: []}
+`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := Validate(m)
+			var found bool
+			for _, d := range r.Errors() {
+				if strings.Contains(d.Msg, tc.expect) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s was accepted and would then be ignored: %v", tc.name, r.Err())
+			}
+		})
+	}
+}

@@ -38,6 +38,12 @@ func Parse(b []byte) (*Manifest, error) {
 	}
 
 	applyDefaults(&m)
+	// Externals become ordinary services, so everything downstream -- ports,
+	// hostnames, probes, teardown -- treats them as what they are.
+	if err := expandExternals(&m); err != nil {
+		return nil, err
+	}
+	applyDefaults(&m)
 	return &m, nil
 }
 

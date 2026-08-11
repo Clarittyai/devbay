@@ -60,6 +60,11 @@ until spawn time, scrubbed from logs, MCP responses, audit records and model
 prompts. Minted credentials are revoked at teardown where the provider allows
 it.
 
+**Stands in for third-party services.** `externals:` expands into ordinary
+services from a small catalogue — mailpit for SMTP, stripe-mock, minio for S3 —
+each with its own hostname, health probe and teardown, so a bay can exercise
+mail or object storage with no credentials at all.
+
 **Confines each service's network to what it declares** (`DEVBAY_EGRESS=1`),
 applied inside the container's own namespace, never the host's.
 
@@ -127,13 +132,16 @@ Stated plainly rather than left to be discovered.
 
 - **No scheduler.** `devbay cool` is manual. Nothing evicts a bay under memory
   pressure, so five bays is a number you choose, not one devbay enforces.
-- **No supervision surface.** No favicon tinting, staleness banner or
-  dashboard, so telling five browser tabs apart relies on the page itself —
-  which is why every container is given `DEVBAY_BAY`.
-- **`fork: template` and `fork: prefix` are schema-only.** `fork: image` is the
-  implemented strategy, and it is the default.
-- **`externals:` emulators are not wired.** Mailpit, stripe-mock and an S3
-  provider are described in the schema and not yet started for you.
+- **No supervision surface.** `supervision:` parses and does nothing: favicon
+  tinting and a staleness banner need a resident process to transform
+  responses, and devbay has no daemon. Telling five browser tabs apart relies
+  on the page itself, which is why every container is given `DEVBAY_BAY`.
+- **Services cannot be shared between bays.** `scope: shared` is refused rather
+  than ignored, and `fork:` — which only means anything for a shared service —
+  is reported as inert. Every service runs once per bay.
+- **`seed:` does not bake an image yet.** Seed steps run as ordinary oneshots
+  through `needs`, so the data is correct; what is missing is the per-project
+  image that would make each bay's datastore start instantly.
 - **Approvals are reported, not stored.** An argv outside the allowlist is
   flagged on every validate rather than remembered once.
 - **AWS STS minting is not implemented.** GitHub App tokens are.

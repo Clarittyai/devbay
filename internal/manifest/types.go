@@ -198,6 +198,14 @@ type Service struct {
 	Egress []string `yaml:"egress,omitempty"`
 
 	Env map[string]string `yaml:"env,omitempty"`
+
+	// Provided marks a service devbay generated from its own emulator
+	// catalogue rather than one the repository declared. Not part of the
+	// format: it exists so R2's approval prompt stays about repository
+	// content. Asking a developer to approve an argv devbay chose for them
+	// trains them to approve prompts, which is the opposite of what the rule
+	// is for.
+	Provided bool `yaml:"-"`
 }
 
 // Mount is a directory from the repository, bound into the container.
