@@ -60,8 +60,8 @@ var RuleFiles = []RuleFile{
 	{Path: "CLAUDE.md", Client: "Claude Code"},
 	{Path: "AGENTS.md", Client: "Codex CLI"},
 	{
-		Path:   filepath.Join(".cursor", "rules", "devbay.mdc"),
-		Client: "Cursor",
+		Path:        filepath.Join(".cursor", "rules", "devbay.mdc"),
+		Client:      "Cursor",
 		Frontmatter: "---\ndescription: How to run and test this repository\nalwaysApply: true\n---\n\n",
 	},
 }

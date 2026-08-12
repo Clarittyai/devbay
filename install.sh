@@ -33,20 +33,29 @@ need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installe
 need uname
 need tar
 
+# Both fetches retry. GitHub's release CDN returns a 503 often enough that a
+# single attempt is not a reliable install: the download dies part way, the
+# script reports that it could not reach a URL that is in fact fine, and the
+# developer's first contact with devbay is a failure that was nobody's fault.
+# Three attempts with a short backoff turns that into a pause.
+RETRIES=3
+
 fetch() {
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL "$1"
+		curl -fsSL --retry "$RETRIES" --retry-delay 1 --retry-connrefused "$1"
 	elif command -v wget >/dev/null 2>&1; then
-		wget -qO- "$1"
+		wget -qO- --tries="$RETRIES" --waitretry=2 "$1"
 	else
 		die "neither curl nor wget is installed"
 	fi
 }
 fetch_to() {
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL -o "$2" "$1"
+		# --retry-all-errors so a 503 is retried too, not only connection
+		# failures. It is the error this actually hits.
+		curl -fsSL --retry "$RETRIES" --retry-delay 1 --retry-all-errors -o "$2" "$1"
 	else
-		wget -qO "$2" "$1"
+		wget -qO "$2" --tries="$RETRIES" --waitretry=2 "$1"
 	fi
 }
 
@@ -80,7 +89,10 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 printf 'devbay %s (%s/%s)\n' "$version" "$os" "$arch"
-fetch_to "$base/$archive" "$tmp/$archive" || die "could not download $archive from $base"
+fetch_to "$base/$archive" "$tmp/$archive" ||
+	die "could not download $archive from $base after $RETRIES attempts.
+   GitHub's release CDN returns 503 occasionally; trying again usually works.
+   You can also download it by hand from https://github.com/$REPO/releases"
 
 # Verified, because this script is piped into a shell and the whole point of
 # publishing checksums is that somebody checks them.
