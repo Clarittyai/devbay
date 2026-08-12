@@ -1,4 +1,4 @@
-import BrandWordmark from '@/components/BrandWordmark';
+import Wordmark from '@/components/Wordmark';
 import Reveal from '@/components/Reveal';
 import Terminal from '@/components/Terminal';
 import TypeOut from '@/components/TypeOut';
@@ -19,6 +19,8 @@ import {
   limits,
   lsRows,
   manifestOut,
+  clients,
+  mcpInstall,
   mcpResult,
   mcpTools,
   repoUrl,
@@ -60,6 +62,7 @@ export default async function Page() {
         <CertaintySection />
         <ObservabilitySection />
         <ConfigSection />
+        <ClientSection />
         <AgentSection />
         <EvidenceSection />
         <LimitsSection />
@@ -76,14 +79,7 @@ function Nav({ version }: { version: string | null }) {
   return (
     <header className="sticky top-0 z-50 border-b border-gray-200/80 bg-canvas/90 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-3.5 sm:px-6 lg:px-8">
-        <a href="https://claritty.ai" className="text-gray-900 transition-colors hover:text-accent-600">
-          <BrandWordmark className="h-[18px] w-auto" />
-          <span className="sr-only">Claritty</span>
-        </a>
-        <span aria-hidden className="text-gray-300">
-          /
-        </span>
-        <span className="font-mono text-[15px] font-semibold tracking-tight text-gray-900">devbay</span>
+        <Wordmark />
         {version ? (
           <span className="tnum hidden rounded-full border border-gray-300 px-2 py-0.5 font-mono text-[11px] text-gray-500 sm:inline">
             {version}
@@ -371,6 +367,46 @@ function ConfigSection() {
   );
 }
 
+/* --------------------------------------------------------------- clients */
+
+function ClientSection() {
+  return (
+    <section className="section border-t border-gray-200">
+      <div className="grid items-center gap-10 lg:grid-cols-2 lg:gap-16">
+        <Reveal className="order-2 lg:order-1">
+          <Terminal command="devbay mcp install" lines={mcpInstall} />
+          <ul className="mt-6 border-t border-gray-200">
+            {clients.map((c) => (
+              <li
+                key={c.name}
+                className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 border-b border-gray-200 py-3"
+              >
+                <span className="font-semibold text-ink">{c.name}</span>
+                <code className="font-mono text-[13px] text-gray-500">{c.file}</code>
+              </li>
+            ))}
+          </ul>
+        </Reveal>
+
+        <Reveal className="order-1 lg:order-2">
+          <div className="eyebrow">Your agent</div>
+          <h2 className="h-section mt-3">One command, and your agent can use it.</h2>
+          <p className="lede mt-5">
+            Claude Code, Cursor and Codex all speak MCP, and each keeps its servers somewhere
+            different, in a different format. devbay writes the entry for all three.
+          </p>
+          <p className="mt-4 text-[15px] leading-relaxed text-gray-600">
+            It merges rather than overwrites, so a config holding six servers still holds six
+            afterwards, and the Codex file keeps its comments. Run it again after moving the binary
+            and it corrects itself. The Claude Code and Cursor entries are committed with the
+            repository, so everyone who clones it gets the same tools without being told.
+          </p>
+        </Reveal>
+      </div>
+    </section>
+  );
+}
+
 /* ---------------------------------------------------------------- agents */
 
 function AgentSection() {
@@ -525,14 +561,9 @@ function Footer({ version }: { version: string | null }) {
   return (
     <footer className="border-t border-gray-200">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-3 px-4 py-8 text-sm text-gray-500 sm:px-6 lg:px-8">
-        <a
-          href="https://claritty.ai"
-          className="text-gray-900 transition-colors hover:text-accent-600"
-        >
-          <BrandWordmark className="h-4 w-auto" />
-          <span className="sr-only">Claritty</span>
-        </a>
-        <span>devbay {version ?? ''}</span>
+        <Wordmark />
+        <span className="tnum">{version ?? ''}</span>
+        <span>Apache-2.0</span>
         <a href={repoUrl} className="transition-colors hover:text-gray-900">
           GitHub
         </a>

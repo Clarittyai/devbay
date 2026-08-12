@@ -206,6 +206,43 @@ services:
     env:
       API_URL: \${bay.api.public_url}`;
 
+/* ------------------------------------------------------- agent clients */
+
+/** The three clients `devbay mcp install` writes, and where each keeps them. */
+export const clients = [
+  { name: 'Claude Code', file: '.mcp.json', scope: 'committed with the repository' },
+  { name: 'Cursor', file: '.cursor/mcp.json', scope: 'committed with the repository' },
+  { name: 'Codex CLI', file: '~/.codex/config.toml', scope: 'your user config' },
+];
+
+/** Real output from `devbay mcp install`. */
+export const mcpInstall: Line[] = [
+  [
+    { t: 'ok', s: '  wrote   ' },
+    { t: 'plain', s: 'Claude Code  ' },
+    { t: 'dim', s: '.mcp.json' },
+  ],
+  [
+    { t: 'ok', s: '  wrote   ' },
+    { t: 'plain', s: 'Cursor       ' },
+    { t: 'dim', s: '.cursor/mcp.json' },
+  ],
+  [
+    { t: 'ok', s: '  wrote   ' },
+    { t: 'plain', s: 'Codex CLI    ' },
+    { t: 'dim', s: '~/.codex/config.toml' },
+  ],
+  [{ t: 'dim', s: '       Codex reads this at startup, so restart it.' }],
+  p(''),
+  [
+    { t: 'ok', s: 'done' },
+    { t: 'plain', s: ' ask your agent to create a bay and run' },
+  ],
+  [{ t: 'plain', s: '     a task. It has seven tools:' }],
+  [{ t: 'dim', s: '  bay_create, bay_list, bay_run_task,' }],
+  [{ t: 'dim', s: '  bay_logs, bay_url, bay_status, bay_destroy' }],
+];
+
 /* -------------------------------------------------------------- agents */
 
 /** internal/mcp/tools.go */

@@ -1,15 +1,18 @@
 import type { Config } from 'tailwindcss';
 
 /**
- * The Claritty marketing palette, lifted from clarity-website/tailwind.config.js
- * so this site inherits the brand rather than approximating it. Only the parts
- * this page uses are carried over.
+ * devbay's own palette.
  *
- * Two additions specific to devbay, both borrowed from elsewhere in the brand
- * rather than invented: `surface` is the platform's `--surface-deep` (#0d1117),
- * the always-dark code ground, and the `term` set names the four colours devbay
- * itself prints with (see the ANSI helpers in cmd/devbay/main.go) so terminal
- * output on the page means what it means in a real shell.
+ * Deliberately not the parent brand's indigo: devbay is an open-source tool
+ * that stands on its own, and a developer deciding whether to install a CLI
+ * should not have to work out whose product it is first.
+ *
+ * The accent is a deep teal for one concrete reason beyond taste. Terminal
+ * output is the main visual on this page, and devbay prints in green for ok,
+ * yellow for a note and red for a failure. A brand colour drawn from any of
+ * those would make the output ambiguous, so the accent sits where none of them
+ * are. `surface` is the always-dark code ground; `term` names the four colours
+ * devbay actually prints with, from the ANSI helpers in cmd/devbay/main.go.
  */
 const config: Config = {
   content: ['./app/**/*.{ts,tsx}', './components/**/*.{ts,tsx}', './lib/**/*.{ts,tsx}'],
@@ -23,15 +26,17 @@ const config: Config = {
     },
     extend: {
       colors: {
-        // Interactive brand colour, shared with app.claritty.ai.
         accent: {
-          DEFAULT: '#5B7FFF',
-          // #5B7FFF at 68% lightness only reaches 3.54:1 against white, so
-          // anything with white text on it uses 600.
-          600: '#2957FF',
-          700: '#4338CA',
+          DEFAULT: '#0D9488',
+          // White text needs 600 or darker: DEFAULT alone is 3.1:1 on white.
+          600: '#0B7268',
+          700: '#095A52',
+          // For the dark surface, where the deep teal would disappear.
+          bright: '#5EEAD4',
         },
-        canvas: '#FBF9F5',
+        ink: '#0F1417',
+        canvas: '#FFFFFF',
+        tint: '#F5F8F8',
         // The always-dark surface for code and terminal output.
         surface: {
           DEFAULT: '#0d1117',

@@ -75,6 +75,10 @@ polling inside containers costs real CPU per bay.
 
 **Exposes all of it to an agent.** Seven stateless MCP tools over stdio. Every
 tool takes an explicit bay id; there is no session state to lose.
+`devbay mcp install` writes the server into Claude Code, Cursor and Codex CLI,
+each of which keeps its config somewhere different and in a different format.
+It merges rather than overwrites, keeps the Codex file's comments, and is
+idempotent, so running it again after moving the binary corrects the path.
 
 **Keeps secrets out of everything an agent or a model can read.** References
 until spawn time, scrubbed from logs, MCP responses, audit records and model

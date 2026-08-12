@@ -3,14 +3,14 @@
 @tailwind utilities;
 
 /*
- * Ported from clarity-website/src/index.css, with the parts DESIGN_PRINCIPLES
- * rules 3 and 10 killed off: no box shadows, no hover motion. Buttons and links
- * change colour on hover and nothing else moves.
+ * Structure follows the craft rules the parent brand codified, because they are
+ * good rules: editorial rows rather than card grids, flat surfaces, entrance
+ * motion only, colour-only hover. The palette and the voice are devbay's own.
  */
 
 @layer base {
   body {
-    @apply bg-canvas text-gray-900 font-sans antialiased;
+    @apply bg-canvas text-ink font-sans antialiased;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
@@ -24,11 +24,11 @@
   }
 
   ::selection {
-    background: #5b7fff26;
+    background: #0d948826;
   }
 
   :focus-visible {
-    outline: 2px solid #2957ff;
+    outline: 2px solid #0B7268;
     outline-offset: 3px;
     border-radius: 4px;
   }
@@ -45,7 +45,7 @@
     @apply btn bg-accent-600 text-white hover:bg-accent-700;
   }
   .btn-quiet {
-    @apply btn border border-gray-300 bg-white text-gray-900 hover:border-gray-400;
+    @apply btn border border-gray-300 bg-white text-ink hover:border-gray-400;
   }
   .btn-md {
     @apply px-6 py-3 text-[15px];
@@ -64,7 +64,7 @@
   }
 
   .h-section {
-    @apply text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl lg:text-5xl;
+    @apply text-3xl font-bold tracking-tight text-ink sm:text-4xl lg:text-5xl;
     letter-spacing: -0.03em;
   }
 

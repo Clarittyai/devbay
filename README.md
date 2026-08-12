@@ -122,6 +122,7 @@ Against your own repository:
 git clone https://github.com/Clarittyai/devbay && cd devbay
 make build
 
+bin/devbay mcp install                # wire it into Claude Code, Cursor and Codex
 bin/devbay doctor                     # is this machine set up well?
 bin/devbay init                       # propose a devbay.yaml for this repo
 bin/devbay init --verify              # …and prove it boots before writing it
