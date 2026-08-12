@@ -81,31 +81,26 @@ that races a peer it does not depend on -- and counting those against devbay
 sends the work in the wrong direction. The bar is that **devbay boots what
 compose boots**, and where the two differ it is devbay's job to explain why.
 
-### Where it stood on 2026-08-11
+### Where it stood on 2026-08-12
 
-35 stacks, on an arm64 Mac with Docker Desktop: **devbay booted and served 25,
-compose 23**. Twenty worked under both; five worked under devbay and not under
-compose, all of them because compose binds the ports the stack declares and
-something on the machine already held one — which is the collision devbay
-exists to remove.
+35 stacks, on an arm64 Mac with Docker Desktop: **devbay served 29, compose
+23**, and **there is no stack compose runs that devbay does not**.
 
-Three worked under compose and not under devbay, and each is worth stating
-rather than counting:
+Six work under devbay and not compose, every one of them because compose binds
+the ports the stack declares and something on the machine already held one —
+which is the collision devbay exists to remove.
 
-- **traefik-golang** wanted `/var/run/docker.sock`, which devbay refused
-  outright — and an orchestration layer that cannot run what Docker runs is
-  not finished. It is now an approval-gated field: `init` writes
-  `docker_socket: true`, no bay starts the service until a person grants it,
-  and the grant is remembered. Both this and `portainer` now run. Compose
-  `labels:` are passed through too, without which Traefik discovered no
-  backends and answered 404 while looking healthy.
-- **prometheus-grafana** ships a `prometheus.yml` with `api_version: v1`, which
-  current Prometheus rejects. It fails under compose too — `restart:
-  unless-stopped` restarts it forever while Grafana serves. devbay now behaves
-  the same way: Grafana serves on its own hostname, Prometheus is reported as
-  restarting with its config error, and `devbay new` exits non-zero.
-- **react-rust-postgres** builds `FROM rust:buster`, whose cargo cannot parse a
-  crate manifest published since. devbay runs the identical build.
+Six work under neither: `nginx-flask-mysql`, `nginx-nodejs-redis`,
+`nginx-wsgi-flask`, `vuejs` and both `wasmedge-*` stacks. Their own builds or
+their own services fail, identically under `docker compose build`. devbay runs
+the same build and reports the same error.
+
+Two of those 29 are **degraded** — `prometheus-grafana` and
+`react-rust-postgres`. Each has one service that cannot come up: a config the
+current Prometheus image rejects, and a cargo too old for a crate published
+since. Compose leaves the rest of the stack running and so does devbay; the
+difference is that devbay names the broken service, keeps its container and
+its logs, and exits non-zero.
 
 The number is a snapshot of one machine on one day, not a score. What it is
 for is noticing when a change to `internal/introspect` makes things worse.

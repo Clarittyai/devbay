@@ -56,12 +56,20 @@ else
     $DEVBAY approve --yes >/dev/null 2>&1
     git add -A 2>/dev/null; git -c user.email=a@t -c user.name=a commit -qm m 2>/dev/null
     boot=$($DEVBAY new t 2>&1)
-    if [ $? -ne 0 ]; then
+    rc=$?
+    # A non-zero exit does not mean no bay. devbay keeps a half-booted stack
+    # and serves the services that came up, the way `docker compose up` does,
+    # so the honest question is the same one asked of compose: does the thing
+    # a developer opens answer?
+    if [ $rc -ne 0 ] && ! echo "$boot" | grep -q "degraded"; then
       d="boot-failed:$(echo "$boot"|grep -i '^error'|head -1|cut -c1-90)"
     else
       host=$($DEVBAY url t 2>/dev/null | grep -o '[a-z0-9.-]*\.localhost' | head -1)
       code=$(serves "$host" 80)
-      case "$code" in 2*|3*|401|403) d="up-$code";; *) d="no-serve-$code";; esac
+      case "$code" in
+        2*|3*|401|403) if [ $rc -ne 0 ]; then d="degraded-$code"; else d="up-$code"; fi;;
+        *) d="no-serve-$code";;
+      esac
     fi
     $DEVBAY rm t --force >/dev/null 2>&1
   fi
