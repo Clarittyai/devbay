@@ -3,23 +3,27 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 /**
- * The scroll entrance, matching clarity-website's Reveal: 20px rise, 600ms,
- * EASE [0.25, 0.46, 0.45, 0.94], once, entrance only.
+ * The scroll entrance: 20px rise, 600ms, once, entrance only.
  *
- * Written in CSS rather than framer-motion for two reasons. It is the only
- * animation on the page, so a 50KB library to fade one div is a poor trade on a
- * page whose job is to load fast. And more importantly it fails open: if the
- * IntersectionObserver never delivers a callback, a timer reveals the content
- * anyway.
+ * The important part is what it does NOT do. It never hides content that is
+ * already on screen.
  *
- * That is not hypothetical. Chrome does not fire IntersectionObserver at all
- * while a tab is hidden, so a page that only reveals on intersection can render
- * completely blank in a background tab, a screenshot service, or anything
- * driving the browser without a visible window. Content that hides itself and
- * waits for permission to come back is a bad default for a marketing page.
+ * The obvious implementation renders everything at opacity 0 and waits for an
+ * IntersectionObserver to reveal it. That fails in more places than it looks.
+ * Chrome does not fire IntersectionObserver in a hidden tab and throttles
+ * timers there too, so a background tab, a screenshot service, a social preview
+ * crawler or a headless capture all get a blank page. The server-rendered HTML
+ * is blank as well, which anything that does not execute JavaScript will read.
+ *
+ * So the markup renders visible, and on mount the client hides only the
+ * elements that are below the fold before animating them in. Anything already
+ * in view stays put. Nothing is ever hidden without a live observer able to
+ * bring it back, and a reader with JavaScript off sees the whole page.
  */
 
 const EASE = 'cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+
+type Phase = 'static' | 'hidden' | 'shown';
 
 export default function Reveal({
   children,
@@ -34,20 +38,28 @@ export default function Reveal({
   duration?: number;
   className?: string;
 }) {
-  const [shown, setShown] = useState(false);
+  // 'static' is the server-rendered state: visible, no transition.
+  const [phase, setPhase] = useState<Phase>('static');
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduce) {
-      setShown(true);
-      return;
-    }
-
     const node = ref.current;
     if (!node) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
-    const reveal = () => setShown(true);
+    // No viewer, so nothing to animate for. A hidden tab fires no
+    // IntersectionObserver and throttles timers, which is exactly the state a
+    // screenshot service or preview crawler loads the page in. Leaving the
+    // content alone means they capture the finished page.
+    if (document.visibilityState === 'hidden') return;
+
+    // Already on screen: leave it alone. Hiding it now would be a flash at
+    // best, and a permanently blank hero wherever the observer never runs.
+    if (node.getBoundingClientRect().top < window.innerHeight) return;
+
+    setPhase('hidden');
+
+    const reveal = () => setPhase('shown');
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting) {
@@ -55,14 +67,12 @@ export default function Reveal({
           observer.disconnect();
         }
       },
-      // Fires slightly before the element is fully on screen, so content
-      // appears as you scroll rather than popping in late.
       { rootMargin: '0px 0px -12% 0px' },
     );
     observer.observe(node);
 
-    // The floor. If the observer never reports, show the content regardless.
-    const failOpen = setTimeout(reveal, 1200);
+    // A floor, for the case where the observer never reports at all.
+    const failOpen = setTimeout(reveal, 1500);
 
     return () => {
       observer.disconnect();
@@ -70,15 +80,18 @@ export default function Reveal({
     };
   }, []);
 
+  const hidden = phase === 'hidden';
   return (
     <div
       ref={ref}
       className={className}
       style={{
-        opacity: shown ? 1 : 0,
-        transform: shown ? 'none' : `translateY(${y}px)`,
-        transition: `opacity ${duration}s ${EASE} ${delay}s, transform ${duration}s ${EASE} ${delay}s`,
-        willChange: shown ? undefined : 'opacity, transform',
+        opacity: hidden ? 0 : 1,
+        transform: hidden ? `translateY(${y}px)` : 'none',
+        transition:
+          phase === 'static'
+            ? undefined
+            : `opacity ${duration}s ${EASE} ${delay}s, transform ${duration}s ${EASE} ${delay}s`,
       }}
     >
       {children}

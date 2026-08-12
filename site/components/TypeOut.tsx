@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { TerminalLines, Prompt } from './Terminal';
 import type { Line } from '@/lib/samples';
 
@@ -9,12 +9,25 @@ import type { Line } from '@/lib/samples';
  *
  * It types the command a character at a time, then reveals the output lines at
  * the pace they actually appear when a bay boots: the waves land in bursts, the
- * summary lands last. It starts when it scrolls into view and runs once.
+ * summary lands last.
  *
- * With prefers-reduced-motion the whole thing renders complete and static.
- * The container reserves its final height either way, so nothing on the page
+ * It starts from the finished state rather than an empty one, and only clears
+ * itself once the client has confirmed there is someone to watch it play. That
+ * ordering is what keeps the terminal readable everywhere the animation cannot
+ * run: with JavaScript off, under prefers-reduced-motion, and in a hidden tab,
+ * which is how screenshot services and link preview crawlers load a page. The
+ * decision happens before paint, so a viewer who does get the animation never
+ * sees the finished output flash first.
+ *
+ * The container reserves its final height throughout, so nothing on the page
  * moves while it plays.
  */
+
+// useLayoutEffect is the right hook for a decision that must not be visible,
+// but React logs a warning if it reaches the server renderer, where it is a
+// no-op. On the server there is nothing to decide.
+const useBeforePaint = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
 export default function TypeOut({
   command,
   lines,
@@ -24,25 +37,23 @@ export default function TypeOut({
   lines: Line[];
   className?: string;
 }) {
-  const [typed, setTyped] = useState('');
-  const [shown, setShown] = useState(0);
-  const [done, setDone] = useState(false);
+  // The finished state, which is also what the server renders.
+  const [typed, setTyped] = useState(command);
+  const [shown, setShown] = useState(lines.length);
+  const [done, setDone] = useState(true);
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const reduce =
-      typeof window !== 'undefined' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-    if (reduce) {
-      setTyped(command);
-      setShown(lines.length);
-      setDone(true);
-      return;
-    }
-
+  useBeforePaint(() => {
     const node = ref.current;
     if (!node) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (document.visibilityState === 'hidden') return;
+
+    // From here on there is a viewer and motion is wanted, so it is safe to
+    // clear the terminal and play it.
+    setTyped('');
+    setShown(0);
+    setDone(false);
 
     const timers: ReturnType<typeof setTimeout>[] = [];
     const play = () => {
@@ -57,6 +68,12 @@ export default function TypeOut({
       timers.push(setTimeout(() => setDone(true), after + 200 * lines.length));
     };
 
+    // Above the fold already, which is where the hero terminal lives.
+    if (node.getBoundingClientRect().top < window.innerHeight) {
+      play();
+      return () => timers.forEach(clearTimeout);
+    }
+
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries[0]?.isIntersecting) return;
@@ -68,12 +85,11 @@ export default function TypeOut({
     );
     observer.observe(node);
 
-    // Chrome does not fire IntersectionObserver in a hidden tab, so the
-    // animation starts on its own if the callback never arrives.
+    // A floor, for the case where the observer never reports at all.
     const failOpen = setTimeout(() => {
       observer.disconnect();
       play();
-    }, 1200);
+    }, 1500);
 
     return () => {
       observer.disconnect();
