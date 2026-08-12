@@ -16,3 +16,8 @@ __pycache__/
 
 # Fixture repos are cloned on demand from the pins, never committed
 /testdata/repos/*/checkout/
+
+# site
+site/node_modules
+site/.next
+site/.vercel

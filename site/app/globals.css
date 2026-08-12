@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Ported from clarity-website/src/index.css, with the parts DESIGN_PRINCIPLES
+ * rules 3 and 10 killed off: no box shadows, no hover motion. Buttons and links
+ * change colour on hover and nothing else moves.
+ */
+
+@layer base {
+  body {
+    @apply bg-canvas text-gray-900 font-sans antialiased;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply font-bold tracking-tight;
+    letter-spacing: -0.03em;
+  }
+
+  ::selection {
+    background: #5b7fff26;
+  }
+
+  :focus-visible {
+    outline: 2px solid #2957ff;
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+}
+
+@layer components {
+  /* One pill shape, one size scale, colour-only hover. */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-full font-semibold transition-colors;
+    letter-spacing: -0.01em;
+    min-height: 44px;
+  }
+  .btn-primary {
+    @apply btn bg-accent-600 text-white hover:bg-accent-700;
+  }
+  .btn-quiet {
+    @apply btn border border-gray-300 bg-white text-gray-900 hover:border-gray-400;
+  }
+  .btn-md {
+    @apply px-6 py-3 text-[15px];
+  }
+  .btn-lg {
+    @apply px-8 py-4 text-base;
+  }
+
+  /* Section rhythm, from DESIGN_PRINCIPLES. */
+  .section {
+    @apply mx-auto max-w-6xl px-4 py-20 sm:px-6 sm:py-28 lg:px-8;
+  }
+
+  .eyebrow {
+    @apply text-xs font-semibold uppercase tracking-[0.18em] text-accent;
+  }
+
+  .h-section {
+    @apply text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl lg:text-5xl;
+    letter-spacing: -0.03em;
+  }
+
+  .lede {
+    @apply text-lg leading-relaxed text-gray-600;
+  }
+
+  /*
+   * Frames sit flat: a border and a radius, no drop shadow. This is the
+   * "master-detail" frame from the anti-pattern table.
+   */
+  .frame {
+    @apply overflow-hidden rounded-3xl border border-gray-200 bg-white;
+  }
+
+  /* The always-dark code ground. No fake window chrome anywhere near it. */
+  .terminal {
+    @apply overflow-x-auto rounded-3xl border border-surface-line bg-surface p-5 font-mono text-[12px] leading-[1.8] text-surface-text sm:p-6 sm:text-[13px];
+  }
+
+  .rowline {
+    @apply border-t border-gray-200;
+  }
+}
+
+@layer utilities {
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Entrance motion only, and none of it when the reader has asked for less. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
