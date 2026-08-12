@@ -42,6 +42,7 @@ const usage = `devbay — parallel, isolated local environments for coding agent
   devbay version                           build and toolchain versions
 
   devbay mcp                               serve the agent interface on stdio
+  devbay mcp install [--client c]          wire devbay into Claude Code, Cursor or Codex
 
   DEVBAY_EGRESS=1        enforce each service's declared egress allowlist
   DEVBAY_MAX_BAYS=5      cool the oldest bay when a new one would exceed this
@@ -450,6 +451,12 @@ func cmdRemove(ctx context.Context, args []string) error {
 }
 
 func cmdMCP(ctx context.Context, args []string) error {
+	// `devbay mcp install` writes the server into an agent's config; bare
+	// `devbay mcp` is the server itself, spoken over stdio.
+	if len(args) > 0 && args[0] == "install" {
+		return cmdMCPInstall(args[1:])
+	}
+
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	socket := fs.String("socket", "", "also listen on this unix socket")
 	fs.Parse(permute(args))
