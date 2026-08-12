@@ -92,14 +92,18 @@ exists to remove.
 Three worked under compose and not under devbay, and each is worth stating
 rather than counting:
 
-- **traefik-golang** wants `/var/run/docker.sock`. devbay refuses it, and says
-  so in the generated manifest: a container that can reach the daemon can start
-  any other container on the machine, so the bay would not be isolated from
-  anything. The same refusal costs it `portainer`.
+- **traefik-golang** wanted `/var/run/docker.sock`, which devbay refused
+  outright — and an orchestration layer that cannot run what Docker runs is
+  not finished. It is now an approval-gated field: `init` writes
+  `docker_socket: true`, no bay starts the service until a person grants it,
+  and the grant is remembered. Both this and `portainer` now run. Compose
+  `labels:` are passed through too, without which Traefik discovered no
+  backends and answered 404 while looking healthy.
 - **prometheus-grafana** ships a `prometheus.yml` with `api_version: v1`, which
   current Prometheus rejects. It fails under compose too — `restart:
-  unless-stopped` restarts it forever while Grafana serves, so the stack looks
-  up. devbay fails the boot and prints the config error.
+  unless-stopped` restarts it forever while Grafana serves. devbay now behaves
+  the same way: Grafana serves on its own hostname, Prometheus is reported as
+  restarting with its config error, and `devbay new` exits non-zero.
 - **react-rust-postgres** builds `FROM rust:buster`, whose cargo cannot parse a
   crate manifest published since. devbay runs the identical build.
 

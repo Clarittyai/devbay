@@ -403,3 +403,14 @@ func isNotModified(err error) bool {
 	}
 	return false
 }
+
+// HasContainers reports whether this bay has anything the daemon knows about.
+//
+// The difference between the two ways a boot fails. An image that cannot be
+// pulled leaves nothing behind, so there is nothing to look at and a bay kept
+// for inspection would be an empty shell; a service that started and never
+// became healthy leaves the container that holds the explanation.
+func (e *Engine) HasContainers(ctx context.Context) bool {
+	list, err := e.cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: e.filter()})
+	return err == nil && len(list.Items) > 0
+}

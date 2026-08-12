@@ -284,6 +284,22 @@ func validateService(r *Result, m *Manifest, pat spec.Rules, name string, s *Ser
 		seenVolume[v] = true
 	}
 
+	if s.DockerSocket {
+		// Approval rather than an error, and the strongest one devbay issues.
+		// Keyed like any other approval so it is granted once, by a person,
+		// and re-asked if the service changes.
+		r.add2(Diagnostic{
+			Severity: Approval,
+			Rule:     "R2",
+			Path:     at + "/docker_socket",
+			Msg: "this service is given the Docker daemon socket. A container holding it can start " +
+				"any other container on this machine, with any image and any mount, so the bay is " +
+				"not isolated from the machine and neither is anything else on it. Grant it only " +
+				"to something you would run unsandboxed",
+			Argv: Argv{"<docker socket>", name},
+		})
+	}
+
 	if !s.Restart.Valid() {
 		r.add(Error, "", at+"/restart",
 			fmt.Sprintf("%q is not a restart policy; use no, on-failure, always or unless-stopped", s.Restart))

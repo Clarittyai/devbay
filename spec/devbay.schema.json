@@ -465,6 +465,18 @@
           ],
           "default": "no",
           "description": "What to do when the process exits, spelled the way Docker spells it and applied by the daemon. Present because real compose files depend on it: a service that talks to a peer it declares no dependency on races that peer at startup, and compose files handle it with `restart: on-failure` rather than depends_on. A oneshot may only use no or on-failure -- always would restart it after it succeeded and the wait for its exit code would never end."
+        },
+        "docker_socket": {
+          "type": "boolean",
+          "default": false,
+          "description": "Bind the host's Docker daemon socket into this service. Off by default and approval-gated: a container holding the socket can start any other container on this machine, with any image and any mount, so the bay is isolated from nothing and neither is the rest of the machine. It exists because refusing outright made devbay unable to run things Docker runs -- a reverse proxy that reads container labels, a container manager, a test suite that starts its own containers. The validator raises an approval, and no bay starts the service until a person has granted it."
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Container labels passed through to the daemon. Load-bearing more often than they look: a reverse proxy that discovers its backends by label routes to nothing without them, and the stack comes up healthy and answers 404. devbay's own dev.devbay.* labels are how teardown finds what to remove, so they win on a collision."
         }
       },
       "oneOf": [

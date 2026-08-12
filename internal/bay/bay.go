@@ -439,6 +439,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Bay, error) 
 		return nil, cause
 	}
 
+	// Set when the bay came up with something broken in it. The bay still
+	// exists, so this travels back beside it rather than instead of it.
+	var degraded error
+
 	mf, err := loadManifestFor(wt.Path, m.RepoRoot)
 	if err != nil {
 		return unwind(err)
@@ -499,15 +503,35 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Bay, error) 
 		if err != nil {
 			return unwind(err)
 		}
-		if err := eng.Up(ctx, plan); err != nil {
-			_ = eng.Down(context.WithoutCancel(ctx))
-			return unwind(err)
-		}
+		bootErr := eng.Up(ctx, plan)
+
 		// Booting runs containers over the worktree -- installs, builds,
 		// migrations -- and they run as root. The developer's next act is to
 		// edit the code, so the tree has to be theirs before `devbay new`
 		// returns rather than the first time they try to save a file.
 		m.EnsureWritable(ctx, b.Worktree)
+
+		if bootErr != nil && !eng.HasContainers(ctx) {
+			// Nothing was created -- an image that could not be pulled, a
+			// context that could not be built -- so there is nothing to look
+			// at, and a bay kept for inspection would be an empty shell that
+			// holds the name and the branch against a retry.
+			return unwind(bootErr)
+		}
+		if bootErr != nil {
+			// The bay is kept. devbay is an orchestration layer, and Docker
+			// leaves a stack's containers in place when one service fails to
+			// come up -- the rest keep running and the broken one can be
+			// inspected. Tearing the whole bay down instead destroyed the only
+			// evidence of what went wrong: the developer got an error, no
+			// containers, and no way to read the log that explained it. It also
+			// made devbay unable to run stacks Docker runs, which for an
+			// orchestration layer is the wrong way round.
+			//
+			// So the bay is registered, its healthy services keep serving, and
+			// the failure is reported with the one command that shows the rest.
+			degraded = bootErr
+		}
 	}
 
 	if err := m.store.Save(ctx, record{
@@ -523,6 +547,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*Bay, error) 
 	m.mu.Lock()
 	m.bays[opts.Name] = b
 	m.mu.Unlock()
+
+	if degraded != nil {
+		return b, &BootError{Bay: opts.Name, Err: degraded}
+	}
 	return b, nil
 }
 
@@ -871,4 +899,32 @@ func DeriveAlias(branch string) string {
 		cut = cut[:i]
 	}
 	return strings.Trim(cut, "-")
+}
+
+// BootError says a bay exists but something in it did not come up.
+//
+// A distinct type because the two outcomes need different handling and used to
+// be conflated: "the bay could not be created" is a dead end, while "the bay is
+// running with one broken service" is the ordinary state of a stack somebody is
+// still working on. The bay it names is real -- it will appear in `devbay ls`,
+// its logs can be read, its healthy services serve, and `devbay rm` removes it.
+type BootError struct {
+	Bay string
+	Err error
+}
+
+func (e *BootError) Error() string {
+	return fmt.Sprintf("%s\n\nThe bay was kept so you can look: `devbay logs %s <service>`, "+
+		"`devbay status %s`. Its healthy services are serving.", e.Err, e.Bay, e.Bay)
+}
+
+func (e *BootError) Unwrap() error { return e.Err }
+
+// Degraded reports whether err is a bay that exists with something broken in it.
+func Degraded(err error) (*BootError, bool) {
+	var be *BootError
+	if errors.As(err, &be) {
+		return be, true
+	}
+	return nil, false
 }

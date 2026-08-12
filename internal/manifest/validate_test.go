@@ -615,3 +615,33 @@ func TestSupervisionIsRefusedRatherThanIgnored(t *testing.T) {
 		t.Errorf("the refusal did not say why: %v", r.Err())
 	}
 }
+
+// The socket is the most dangerous thing a manifest can ask for, so it is
+// neither refused (devbay could then not run what Docker runs) nor granted
+// quietly.
+func TestDockerSocketNeedsApproval(t *testing.T) {
+	m := load(t, "gitea")
+	for _, s := range m.Services {
+		s.DockerSocket = true
+		break
+	}
+	r := Validate(m)
+	if !r.OK() {
+		t.Fatalf("docker_socket made the manifest invalid: %v", r.Err())
+	}
+	var found bool
+	for _, d := range r.Approvals() {
+		if strings.Contains(d.Path, "docker_socket") {
+			found = true
+			if len(d.Argv) == 0 {
+				t.Error("the approval carries no key, so it could never be granted or remembered")
+			}
+			if !strings.Contains(d.Msg, "any other container") {
+				t.Errorf("the approval does not say what it grants: %q", d.Msg)
+			}
+		}
+	}
+	if !found {
+		t.Error("the Docker socket was granted without asking anyone")
+	}
+}

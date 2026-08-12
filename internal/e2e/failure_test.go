@@ -66,7 +66,10 @@ func TestManifestFailingValidationLeavesNothing(t *testing.T) {
 // A boot that fails part-way must unwind. Otherwise the branch is taken, the
 // port block is held, and the next attempt fails for a reason unrelated to
 // the original problem.
-func TestFailedBootUnwindsCompletely(t *testing.T) {
+// A boot that fails partway leaves the working half running, the way
+// `docker compose up` does -- and teardown still removes every trace, which is
+// the property the old "unwind on any failure" behaviour was really protecting.
+func TestAFailedBootLeavesNoOrphansOnceRemoved(t *testing.T) {
 	m, repo := newManager(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -81,12 +84,20 @@ func TestFailedBootUnwindsCompletely(t *testing.T) {
 
 	_, err := m.Create(ctx, bay.CreateOptions{Name: "badimage", Alias: "badimage", Boot: true})
 	if err == nil {
-		t.Fatal("a manifest naming an unpullable image should not produce a bay")
+		t.Fatal("a manifest naming an unpullable image should not report a clean boot")
 	}
 	t.Logf("reported: %v", err)
+	if _, degraded := bay.Degraded(err); !degraded {
+		t.Error("the services that did come up were discarded; devbay should leave them, as Docker does")
+	}
+
+	// Removing it takes everything with it, including the branch and worktree.
+	if err := m.Destroy(ctx, "badimage", true); err != nil {
+		t.Fatalf("removing a half-booted bay: %v", err)
+	}
 	assertNoTrace(t, m, "badimage")
 
-	// The name must be reusable: a failed attempt that squats its own branch
+	// And the name is reusable: a failed attempt that squatted its own branch
 	// would make the obvious retry fail too.
 	writeManifest(t, repo, manifestYAML)
 	if _, err := m.Create(ctx, bay.CreateOptions{Name: "badimage", Alias: "badimage", Boot: true}); err != nil {
@@ -327,4 +338,51 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// A service that starts and never becomes healthy is the other shape of a
+// failed boot, and the opposite answer is right: the container holds the
+// explanation, and the services that did come up are still worth having.
+//
+// devbay is an orchestration layer. Docker leaves a stack's containers in
+// place when one of them fails, and a tool that instead deleted the evidence
+// could not run things Docker runs.
+func TestAFailingServiceKeepsTheBayAndTheRest(t *testing.T) {
+	m, repo := newManager(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// The image is fine and the container starts and stays up; the probe can
+	// never pass. This is the shape of a service that is running and not
+	// ready -- a migration that has not finished, a port bound too late.
+	broken := strings.Replace(manifestYAML,
+		"      http: /health\n      timeout: 90s",
+		"      cmd: [python3, -c, \"raise SystemExit(1)\"]\n      timeout: 10s", 1)
+	writeManifest(t, repo, broken)
+	t.Cleanup(func() { writeManifest(t, repo, manifestYAML) })
+
+	b, err := m.Create(ctx, bay.CreateOptions{Name: "halfup", Alias: "halfup", Boot: true})
+	boot, degraded := bay.Degraded(err)
+	if !degraded {
+		if err == nil {
+			_ = m.Destroy(ctx, "halfup", true)
+			t.Fatal("a service that never became healthy was reported as a clean boot")
+		}
+		t.Fatalf("the bay was discarded instead of kept: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Destroy(ctx, "halfup", true) })
+
+	if b == nil {
+		t.Fatal("a degraded boot returned no bay, so nothing can be inspected")
+	}
+	if boot.Bay != "halfup" {
+		t.Errorf("the failure names %q rather than the bay it belongs to", boot.Bay)
+	}
+	// It must be a real bay: listed, inspectable, removable.
+	if _, ok := m.Get("halfup"); !ok {
+		t.Error("the bay is not registered, so `devbay logs` and `devbay rm` cannot reach it")
+	}
+	if !b.Engine.HasContainers(ctx) {
+		t.Error("no containers were kept, so the log that explains the failure is gone")
+	}
 }

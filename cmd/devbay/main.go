@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -100,6 +101,9 @@ func main() {
 	}
 
 	if err != nil {
+		if errors.Is(err, errQuiet) {
+			os.Exit(1) // already explained, above the bay's summary
+		}
 		fmt.Fprintf(os.Stderr, "%s %v\n", red("error"), err)
 		os.Exit(1)
 	}
@@ -152,19 +156,39 @@ func cmdNew(ctx context.Context, args []string) error {
 	b, err := m.Create(ctx, bay.CreateOptions{
 		Name: name, Alias: *alias, Branch: *branch, From: *from, Boot: !*noBoot,
 	})
-	if err != nil {
+	boot, degraded := bay.Degraded(err)
+	if err != nil && !degraded {
 		return err
+	}
+	if degraded {
+		// Printed before the bay's own summary, because the summary is still
+		// worth reading: the services that did come up are serving, and their
+		// hostnames are below.
+		fmt.Fprintf(os.Stderr, "\n%s %v\n\n", yellow("degraded"), boot)
 	}
 
 	info, err := m.Describe(ctx, b)
 	if err != nil {
 		return err
 	}
+	verb := green("created")
+	if degraded {
+		verb = yellow("created (degraded)")
+	}
 	fmt.Printf("%s %s (%s) on %s in %s\n",
-		green("created"), bold(b.Name), b.Alias, b.Branch, time.Since(start).Round(time.Millisecond))
+		verb, bold(b.Name), b.Alias, b.Branch, time.Since(start).Round(time.Millisecond))
 	printURLs(info)
+	if degraded {
+		// Non-zero, because something the manifest declared is not running and
+		// a script or an agent must be able to tell. The bay is still there.
+		return errQuiet
+	}
 	return nil
 }
+
+// errQuiet exits non-zero without printing again; the reason is already on
+// screen, above the bay's own summary.
+var errQuiet = errors.New("")
 
 func cmdList(ctx context.Context, _ []string) error {
 	m, err := open(ctx, false)

@@ -234,6 +234,22 @@ func (e *Engine) labels(service string) map[string]string {
 	return l
 }
 
+// serviceLabels merges the manifest's labels with devbay's own.
+//
+// devbay's win on a collision: they are how teardown finds what to remove, and
+// a manifest that could overwrite them could strand a container that nothing
+// would ever clean up.
+func (e *Engine) serviceLabels(name string, s *manifest.Service) map[string]string {
+	l := map[string]string{}
+	for k, v := range s.Labels {
+		l[k] = v
+	}
+	for k, v := range e.labels(name) {
+		l[k] = v
+	}
+	return l
+}
+
 // filter matches everything belonging to this bay.
 func (e *Engine) filter() client.Filters {
 	return make(client.Filters).
@@ -282,6 +298,14 @@ func (e *Engine) Up(ctx context.Context, plan *Plan) error {
 		}
 		wg.Wait()
 		if err := errors.Join(errs...); err != nil {
+			// The services that did come up stay reachable. Publishing routes
+			// only after every wave succeeded meant a bay with one broken
+			// service had no hostnames at all -- the working half was running
+			// and unreachable, and the proxy answered "no bay is serving this
+			// hostname", which is the least true thing it could have said.
+			if perr := e.publishRoutes(ctx); perr != nil {
+				e.Log("  could not publish routes for the services that started: %v", perr)
+			}
 			return fmt.Errorf("wave %d: %w", i, err)
 		}
 	}
@@ -576,6 +600,15 @@ func (e *Engine) createFor(ctx context.Context, name, owner string, s *manifest.
 	}
 
 	mounts := make([]mount.Mount, 0, len(s.Volumes))
+	if s.DockerSocket {
+		// Approved by a human at validation time; the engine only carries out
+		// what the manifest says and the approval store has recorded.
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: "/var/run/docker.sock",
+			Target: "/var/run/docker.sock",
+		})
+	}
 	if seed != nil {
 		mounts = append(mounts, seed.Mounts...)
 	}
@@ -607,7 +640,7 @@ func (e *Engine) createFor(ctx context.Context, name, owner string, s *manifest.
 			Cmd:          cmd,
 			Env:          envList,
 			WorkingDir:   workdir,
-			Labels:       e.labels(name),
+			Labels:       e.serviceLabels(name, s),
 			ExposedPorts: exposed,
 		},
 		HostConfig: &container.HostConfig{

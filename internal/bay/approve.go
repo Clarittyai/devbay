@@ -33,7 +33,7 @@ func (m *Manager) RequireApprovals(ctx context.Context, mf *manifest.Manifest, r
 	for _, d := range pending {
 		fmt.Fprintf(&b, "\n  %s\n    %s\n", d.Location(), strings.Join(d.Argv, " "))
 	}
-	b.WriteString("\nRead them -- they are scripts in this repository -- then run:\n\n  devbay approve\n")
+	b.WriteString("\nRead them, then run:\n\n  devbay approve\n")
 	return errAwaitingApproval{msg: b.String()}
 }
 

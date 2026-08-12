@@ -102,6 +102,17 @@ than refusing or letting the machine swap. Cooling, not freezing, because
 `docker pause` stops scheduling and not allocation. The focused bay is never
 the one stopped.
 
+**Runs what Docker runs.** devbay is an orchestration layer, so a stack that
+comes up under `docker compose up` should come up here. That has consequences
+it took a corpus of real repositories to see: a service that fails to become
+healthy leaves the rest of the bay running and its own container in place to be
+read, rather than taking the whole bay down with it; compose `labels:` are
+passed through, because a proxy that discovers backends by label routes to
+nothing without them; and a service may be handed the Docker daemon socket —
+approval-gated, never by default — because a label-driven proxy, a container
+manager and a test suite that starts its own containers are all things Docker
+runs.
+
 **Reverses itself completely.** `devbay rm` removes containers, volumes,
 networks, built images, the worktree and the port block. A branch carrying
 commits is kept, and it says so.
@@ -204,6 +215,9 @@ Stated plainly rather than left to be discovered.
 - **Nothing reacts between commands.** The resident budget is applied when a
   bay is created, so five bays left running overnight stay running. There is no
   process watching, and adding one would make devbay a daemon.
+- **A bay that half-boots is reported, not repaired.** The working services
+  serve, the broken one keeps its container and its logs, and `devbay new`
+  exits non-zero. Nothing tries to fix it.
 - **No supervision surface.** `supervision:` is refused rather than ignored.
   Favicon tinting and a staleness banner need the proxy to transform
   responses, which means shipping a custom Caddy build rather than configuring

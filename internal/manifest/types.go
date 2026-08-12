@@ -171,6 +171,27 @@ type Service struct {
 	Start Argv `yaml:"start,omitempty"` // long-running services
 	Run   Argv `yaml:"run,omitempty"`   // oneshots
 
+	// Labels are container labels, passed through to the daemon.
+	//
+	// Load-bearing far more often than they look: a reverse proxy that
+	// discovers its backends by label routes to nothing without them, and the
+	// stack comes up healthy and answers 404. devbay's own labels are how
+	// teardown finds what to remove, so those win on a collision.
+	Labels map[string]string `yaml:"labels,omitempty"`
+
+	// DockerSocket binds the host's Docker daemon socket into the service.
+	//
+	// Off by default and approval-gated, because a container that can reach
+	// the daemon can start any other container on the machine, with any image
+	// and any mount -- the bay is then isolated from nothing, and neither is
+	// the rest of the developer's machine. It exists because refusing outright
+	// made devbay unable to run things Docker runs: a reverse proxy that reads
+	// container labels, a container manager, and above all a test suite that
+	// starts its own containers. An orchestration layer that cannot orchestrate
+	// those is not finished; one that hands the daemon over silently is not
+	// safe. So it is written down, and a human agrees to it once.
+	DockerSocket bool `yaml:"docker_socket,omitempty"`
+
 	// Restart is what to do when the process exits.
 	//
 	// Present because real compose files depend on it. A stack whose web

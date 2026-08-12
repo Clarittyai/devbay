@@ -165,6 +165,21 @@ func (s *Server) createBay(ctx context.Context, raw json.RawMessage) (any, error
 		From:   args.FromBranch,
 		Boot:   boot,
 	})
+	if boot, ok := bay.Degraded(err); ok {
+		// The bay exists. An agent that treats this as "creation failed" will
+		// create another one, and another, instead of reading the log of the
+		// service that did not start.
+		info, derr := s.mgr.Describe(ctx, b)
+		if derr != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"bay":      info,
+			"degraded": true,
+			"detail":   boot.Err.Error(),
+			"next":     "the bay exists and its healthy services are serving; read the failing service with bay_logs",
+		}, nil
+	}
 	if bay.AwaitingApproval(err) {
 		// Said in the second person, because the only useful thing the agent
 		// can do with this is relay it. An error phrased at the agent invites

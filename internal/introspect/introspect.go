@@ -229,8 +229,9 @@ func (d *detector) composeSecrets(project *composetypes.Project, svc composetype
 // something the developer has to decide about themselves -- silently binding
 // /var/run/docker.sock, which real compose files do, would hand a bay the
 // daemon and with it the machine.
-func (d *detector) composeMounts(svc composetypes.ServiceConfig) []manifest.Mount {
+func (d *detector) composeMounts(svc composetypes.ServiceConfig) ([]manifest.Mount, bool) {
 	var out []manifest.Mount
+	var dockerSocket bool
 	for _, v := range svc.Volumes {
 		if v.Type != "bind" || v.Source == "" || v.Target == "" || v.Target == "/" {
 			continue
@@ -240,14 +241,18 @@ func (d *detector) composeMounts(svc composetypes.ServiceConfig) []manifest.Moun
 			r, err := filepath.Rel(d.dir, src)
 			if err != nil || strings.HasPrefix(r, "..") {
 				if strings.HasSuffix(src, "docker.sock") {
-					// Worth saying plainly rather than as a path problem. A
-					// container holding this socket can start any other
-					// container, on any image, with any mount -- so the bay is
-					// not isolated from the machine in any sense that matters.
-					d.gap("service %q wants the Docker socket, which devbay will not give it: "+
-						"a container that can reach the daemon can start any other container on this "+
-						"machine, and the bay would not be isolated from anything. Run this service "+
-						"outside devbay", svc.Name)
+					// Transcribed as the field that asks for it rather than
+					// dropped. devbay is an orchestration layer, and a reverse
+					// proxy that reads container labels or a test suite that
+					// starts its own containers are things Docker runs -- so
+					// refusing outright left devbay unable to run them at all.
+					// The field is refused until a person approves it, so
+					// nothing reaches the daemon by accident.
+					dockerSocket = true
+					d.gap("service %q asks for the Docker daemon socket, so devbay wrote "+
+						"`docker_socket: true` and will not start it until you approve that: a "+
+						"container holding the socket can start any other container on this machine",
+						svc.Name)
 					continue
 				}
 				d.gap("service %q binds %s, which is outside the repository; devbay did not carry it over",
@@ -265,7 +270,7 @@ func (d *detector) composeMounts(svc composetypes.ServiceConfig) []manifest.Moun
 		}
 		out = append(out, manifest.Mount{Source: src, Target: v.Target})
 	}
-	return out
+	return out, dockerSocket
 }
 
 // composeShadowed transcribes the anonymous volumes a compose file uses to
@@ -576,6 +581,19 @@ func (d *detector) fromCompose(ctx context.Context) {
 					"as literals or as ${secret:...}", name, ef.Path)
 			}
 
+			// Labels are how a label-driven proxy finds its backends. Dropping
+			// them left traefik with nothing to route to: the stack came up
+			// healthy and answered 404.
+			for k, v := range svc.Labels {
+				if !safeEnvValue(v) {
+					continue
+				}
+				if s.Labels == nil {
+					s.Labels = map[string]string{}
+				}
+				s.Labels[k] = v
+			}
+
 			// The command is what the service actually runs. compose-go has
 			// already split it into an argv array -- devbay never does that
 			// splitting itself -- so transcribing it preserves R1 exactly:
@@ -599,7 +617,8 @@ func (d *detector) fromCompose(ctx context.Context) {
 			// the environment variable naming the file and not the file, which
 			// is the most confusing possible half-transcription -- everything
 			// looks right and the database dies on boot.
-			binds := d.composeMounts(svc)
+			binds, wantsSocket := d.composeMounts(svc)
+			s.DockerSocket = wantsSocket
 			if shadowed := d.composeShadowed(svc, binds); len(shadowed) > 0 {
 				s.Volumes = shadowed
 				d.note(SourceCompose, path, fmt.Sprintf("service %q keeps %s out of the bind mount",
