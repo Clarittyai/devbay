@@ -145,6 +145,18 @@ type CreateOptions struct {
 // two worktrees, so without adoption devbay could not run a bay on a branch
 // an agent was already working in — which is the common case, not a corner.
 func (m *Manager) Create(opts CreateOptions) (*Worktree, error) {
+	// Held across the whole operation, not just the `git worktree add`: the
+	// unwind path removes a worktree and prunes, which touches the same
+	// metadata a concurrent create would be reading.
+	release, err := m.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return m.create(opts)
+}
+
+func (m *Manager) create(opts CreateOptions) (*Worktree, error) {
 	if opts.Name == "" {
 		return nil, errors.New("worktree: name is required")
 	}
@@ -261,6 +273,11 @@ func (m *Manager) DeleteBranch(branch string) error {
 	if branch == "" {
 		return nil
 	}
+	release, err := m.lock()
+	if err != nil {
+		return err
+	}
+	defer release()
 	if _, err := git(m.RepoRoot, "branch", "-D", branch); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil
@@ -274,6 +291,15 @@ func (m *Manager) DeleteBranch(branch string) error {
 // work unless force is set, and never removes the main checkout or a worktree
 // devbay adopted.
 func (m *Manager) Remove(branch string, force bool) error {
+	release, err := m.lock()
+	if err != nil {
+		return err
+	}
+	defer release()
+	return m.remove(branch, force)
+}
+
+func (m *Manager) remove(branch string, force bool) error {
 	wt, ok, err := m.Find(branch)
 	if err != nil {
 		return err
@@ -564,6 +590,11 @@ func (m *Manager) BranchHasWork(branch string) bool {
 // administrative files behind, and the next create fails for a different
 // reason than the first.
 func (m *Manager) Prune() error {
-	_, err := git(m.RepoRoot, "worktree", "prune")
+	release, err := m.lock()
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = git(m.RepoRoot, "worktree", "prune")
 	return err
 }
