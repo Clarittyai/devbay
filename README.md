@@ -153,7 +153,7 @@ go test -short ./...         # skip anything needing Docker
 go test -race ./...          # the concurrency the tool exists for
 ```
 
-289 tests across 20 packages, race-clean.
+305 tests across 20 packages, race-clean.
 
 The suite is arranged so that the parts which can be tested without Docker are,
 and the parts that cannot are tested against real containers rather than mocks:
