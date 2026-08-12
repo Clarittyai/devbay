@@ -111,6 +111,31 @@ of images. It is what to run before believing a change to `internal/introspect`
 is an improvement, because that package cannot be judged against fixtures
 written by the same person who wrote the package.
 
+## The browser gate
+
+One claim cannot be checked from Go, because it is a claim about a browser's
+cookie jar. It is also the claim the whole design rests on, so it is written
+out here and checked by hand.
+
+Two bays of any application that sets a session cookie. Visit each of them
+twice: once through the host ports, which is the `localhost:3001` world devbay
+replaces, and once through the bay hostnames.
+
+```
+                             bay alpha              bay beta
+  127.0.0.1:40160 / :41540   session=alpha-session  session=alpha-session   ← leaked
+  <bay>.<project>.localhost  session=alpha-session  (none)                  ← isolated
+```
+
+The top row is the bug: browsers key cookies by host and ignore the port, so
+two bays on the same loopback address share one jar and the second bay is
+logged in as the first. Nothing about the two applications is wrong; nothing in
+either log says anything. The bottom row is what a per-bay origin buys.
+
+Checked on 2026-08-11 in Chrome, against a two-bay stack whose service reports
+the `Cookie` header it received. The bay hostnames resolved with no setup — no
+`/etc/hosts`, no resolver, no flags.
+
 ## What it deliberately does not check
 
 Anything under "Known unfinished" in CAPABILITIES.md. Asserting behaviour that

@@ -45,9 +45,11 @@ moment two instances exist. devbay rewrites them to `${bay.api.public_url}` and
 from evidence rather than from variable names.
 
 **Gives each bay its own browser origin.** `feature-x.myapp.localhost` rather
-than `localhost:3001`. Browsers key cookies and storage by host and ignore the
-port, so two bays on different ports share one jar and clobber each other's
-sessions. This is the difference that is hard to work around.
+than `localhost:3001`. Browsers key cookies by host and ignore the port, so two
+bays on different ports share one jar and the second is logged in as the first
+— measured, not assumed: see the browser gate in
+[ACCEPTANCE.md](ACCEPTANCE.md#the-browser-gate). This is the difference that is
+hard to work around.
 
 **Builds images from the repository.** `build:` with a context, dockerfile and
 target, through BuildKit, honouring `.dockerignore`. The context is confined to

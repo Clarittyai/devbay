@@ -1,0 +1,15 @@
+version: 1
+project: cookies
+services:
+  web:
+    image: node:22-alpine
+    start: [node, server.js]
+    port: 8080
+    primary: true
+    health: {http: /}
+    env:
+      PORT: "8080"
+tasks:
+  unit:
+    run: ["node", "--test", "server.test.js"]
+    needs: []
