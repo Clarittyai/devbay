@@ -233,6 +233,21 @@ export const mcpInstall: Line[] = [
     { t: 'dim', s: '~/.codex/config.toml' },
   ],
   [{ t: 'dim', s: '       Codex reads this at startup, so restart it.' }],
+  [
+    { t: 'ok', s: '  wrote   ' },
+    { t: 'plain', s: 'Claude Code  ' },
+    { t: 'dim', s: 'CLAUDE.md' },
+  ],
+  [
+    { t: 'ok', s: '  wrote   ' },
+    { t: 'plain', s: 'Codex CLI    ' },
+    { t: 'dim', s: 'AGENTS.md' },
+  ],
+  [
+    { t: 'ok', s: '  wrote   ' },
+    { t: 'plain', s: 'Cursor       ' },
+    { t: 'dim', s: '.cursor/rules/devbay.mdc' },
+  ],
   p(''),
   [
     { t: 'ok', s: 'done' },

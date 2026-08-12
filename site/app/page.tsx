@@ -398,8 +398,15 @@ function ClientSection() {
           <p className="mt-4 text-[15px] leading-relaxed text-gray-600">
             It merges rather than overwrites, so a config holding six servers still holds six
             afterwards, and the Codex file keeps its comments. Run it again after moving the binary
-            and it corrects itself. The Claude Code and Cursor entries are committed with the
-            repository, so everyone who clones it gets the same tools without being told.
+            and it corrects itself.
+          </p>
+          <p className="mt-4 text-[15px] leading-relaxed text-gray-600">
+            It also writes a short block into your <code className="font-mono text-[0.9em]">CLAUDE.md</code>,{' '}
+            <code className="font-mono text-[0.9em]">AGENTS.md</code> and Cursor rules. Reaching the
+            tools is not the same as using them: an agent reads the repository&apos;s instructions and
+            plans from them before it looks at a tool list, so a repository that says nothing gets a
+            plan built around <code className="font-mono text-[0.9em]">npm test</code> and{' '}
+            <code className="font-mono text-[0.9em]">docker compose up</code>.
           </p>
         </Reveal>
       </div>

@@ -210,3 +210,74 @@ func TestEveryClientHasAConfigPath(t *testing.T) {
 		}
 	}
 }
+
+// The instruction files are the part that makes devbay used rather than merely
+// reachable, and they belong to whoever wrote them.
+
+func TestRulesKeepWhatWasAlreadyInTheFile(t *testing.T) {
+	root := t.TempDir()
+	existing := "# my project\n\nConventions the team wrote.\n"
+	if err := os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := WriteRules(RuleFiles[0], root); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
+	if !strings.Contains(string(got), "Conventions the team wrote.") {
+		t.Error("the existing instructions were lost")
+	}
+	if !strings.Contains(string(got), "bay_run_task") {
+		t.Error("the devbay block was not added")
+	}
+}
+
+func TestRulesAreIdempotent(t *testing.T) {
+	root := t.TempDir()
+	if _, err := WriteRules(RuleFiles[0], root); err != nil {
+		t.Fatal(err)
+	}
+	res, err := WriteRules(RuleFiles[0], root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed {
+		t.Error("running it twice rewrote the file, so every install would show as a diff")
+	}
+	got, _ := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
+	if n := strings.Count(string(got), ruleBegin); n != 1 {
+		t.Errorf("the block appears %d times; the file would grow on every install", n)
+	}
+}
+
+// Cursor ignores a rule file with no frontmatter, so a created one must have it.
+func TestCursorRuleGetsItsFrontmatter(t *testing.T) {
+	root := t.TempDir()
+	var cursor RuleFile
+	for _, f := range RuleFiles {
+		if f.Client == "Cursor" {
+			cursor = f
+		}
+	}
+	if _, err := WriteRules(cursor, root); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(root, cursor.Path))
+	if !strings.HasPrefix(string(got), "---\n") {
+		t.Errorf("no frontmatter, so Cursor will not apply the rule:\n%s", string(got)[:40])
+	}
+	if !strings.Contains(string(got), "alwaysApply: true") {
+		t.Error("the rule is not marked to always apply")
+	}
+}
+
+// The block has to say the two things an agent gets wrong on its own.
+func TestRulesSayWhatNotToDo(t *testing.T) {
+	for _, want := range []string{"bay_run_task", "docker compose up", "public_url", "bay_create"} {
+		if !strings.Contains(RulesBody, want) {
+			t.Errorf("the instructions never mention %q", want)
+		}
+	}
+}

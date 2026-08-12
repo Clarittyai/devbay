@@ -24,6 +24,7 @@ func cmdMCPInstall(args []string) error {
 	client := fs.String("client", "", "claude, cursor or codex; omit to write all three")
 	global := fs.Bool("global", false, "write the user-level config instead of this repository's")
 	dry := fs.Bool("dry-run", false, "print what would change and write nothing")
+	noRules := fs.Bool("no-rules", false, "skip the agent instructions, write only the MCP config")
 	fs.Parse(permute(args))
 
 	binary, err := devbayPath()
@@ -51,9 +52,12 @@ func cmdMCPInstall(args []string) error {
 		project, globalPath := c.Paths(repoRoot, home)
 
 		path := project
-		scope := "this repository"
+		outsideRepo := false
 		if *global || path == "" {
-			path, scope = globalPath, "your user config"
+			// Codex has no project scope, so this one always lands in the home
+			// directory. Worth saying: a developer running a command inside a
+			// repository does not expect a change outside it.
+			path, outsideRepo = globalPath, true
 		}
 		if path == "" {
 			fmt.Printf("  %s %s has no config devbay can write\n", yellow("--"), c.Name)
@@ -79,19 +83,46 @@ func cmdMCPInstall(args []string) error {
 		default:
 			fmt.Printf("  %s %-12s %s\n", green("updated"), c.Name, dim(short(path, home)))
 		}
+		if outsideRepo {
+			fmt.Printf("       %s\n", dim("this one is your user config, not this repository"))
+		}
 		if res.Before != "" {
 			fmt.Printf("       %s %s\n", dim("replaced"), dim(res.Before))
 		}
 		if c.Note != "" {
 			fmt.Printf("       %s\n", dim(c.Note))
 		}
-		_ = scope
 		wrote++
 	}
 
 	if *dry {
+		for _, f := range mcp.RuleFiles {
+			fmt.Printf("  %s %-12s %s %s\n", dim("would write"), f.Client, dim("→"), filepath.Join(repoRoot, f.Path))
+		}
 		return nil
 	}
+
+	// Reaching the tools is not the same as using them. An agent reads the
+	// repository's instructions and plans from them before it looks at a tool
+	// list, so a repository that says nothing gets a plan built around `npm
+	// test` and the tools sit there unused.
+	if !*noRules && repoRoot != "" {
+		for _, f := range mcp.RuleFiles {
+			res, err := mcp.WriteRules(f, repoRoot)
+			if err != nil {
+				return fmt.Errorf("%s: %w", f.Path, err)
+			}
+			if res.Changed {
+				verb := "updated"
+				if res.Created {
+					verb = "wrote"
+				}
+				fmt.Printf("  %s %-12s %s\n", green(verb), f.Client, dim(f.Path))
+				wrote++
+			}
+		}
+	}
+
 	if wrote > 0 {
 		fmt.Printf("\n%s ask your agent to create a bay and run a task. It has seven tools:\n", green("done"))
 		fmt.Printf("  %s\n", dim(strings.Join(toolNames(), ", ")))
