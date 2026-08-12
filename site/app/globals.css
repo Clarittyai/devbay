@@ -27,6 +27,20 @@
     background: #0d948826;
   }
 
+  /* The page carries no decorative motion, only entrance reveals and the hero
+     terminal, and both check this query in JavaScript before they run. This
+     covers what is left: the colour transitions on links and buttons. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
   :focus-visible {
     outline: 2px solid #0B7268;
     outline-offset: 3px;

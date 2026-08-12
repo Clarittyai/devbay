@@ -84,7 +84,13 @@ export default function Reveal({
   return (
     <div
       ref={ref}
-      className={className}
+      // min-w-0 because this is nearly always a grid item, and a grid item
+      // defaults to min-width:auto: it refuses to shrink below its content's
+      // min-content width. One unbreakable line of terminal output then widens
+      // the whole column and the page scrolls sideways on a phone. Every code
+      // block here scrolls inside its own container, so the column is free to
+      // shrink. Harmless in normal flow, where the wrapper is also used.
+      className={`min-w-0 ${className}`}
       style={{
         opacity: hidden ? 0 : 1,
         transform: hidden ? `translateY(${y}px)` : 'none',
