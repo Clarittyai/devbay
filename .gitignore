@@ -21,3 +21,4 @@ __pycache__/
 site/node_modules
 site/.next
 site/.vercel
+.vercel
