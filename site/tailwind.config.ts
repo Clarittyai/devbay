@@ -54,7 +54,12 @@ const config: Config = {
         },
         purple: { DEFAULT: '#AF52DE' },
         teal: { DEFAULT: '#5AC8FA' },
-        green: { DEFAULT: '#34C759' },
+        green: {
+          DEFAULT: '#34C759',
+          // For green *text* on the light ground. The bright one is 2.2:1
+          // there, which makes it a fill colour, not a reading colour.
+          ink: '#1A7F37',
+        },
         orange: { DEFAULT: '#FF9500' },
       },
       fontFamily: {

@@ -226,10 +226,10 @@ function VelocitySection() {
                       <span
                         className={
                           r.state === 'cold'
-                            ? 'text-gray-400'
+                            ? 'text-gray-500'
                             : r.state === 'hot'
-                              ? 'font-semibold text-green'
-                              : 'text-green'
+                              ? 'font-semibold text-green-ink'
+                              : 'text-green-ink'
                         }
                       >
                         {r.state}

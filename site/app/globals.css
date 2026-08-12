@@ -60,7 +60,9 @@
   }
 
   .eyebrow {
-    @apply text-xs font-semibold uppercase tracking-[0.18em] text-accent;
+    /* accent-600, not the brand teal: at 12px the lighter one is 3.7:1 on
+       white, and an eyebrow is text a reader is meant to read. */
+    @apply text-xs font-semibold uppercase tracking-[0.18em] text-accent-600;
   }
 
   .h-section {

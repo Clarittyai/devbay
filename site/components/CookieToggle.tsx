@@ -119,18 +119,18 @@ function Response({
       }`}
     >
       <div className="whitespace-pre text-gray-900">
-        <span className="text-gray-500">bay=</span>
+        <span className="text-gray-600">bay=</span>
         {bay}
-        <span className="text-gray-500"> host=</span>
+        <span className="text-gray-600"> host=</span>
         {host}
       </div>
       <div className="mt-1 whitespace-pre">
-        <span className="text-gray-500">cookie=</span>
+        <span className="text-gray-600">cookie=</span>
         <span className={leaked ? 'font-semibold text-red-700' : 'text-gray-900'}>{cookie}</span>
       </div>
       <div
         className={`mt-2 font-sans text-xs font-semibold ${
-          leaked ? 'text-red-700' : clean ? 'text-green-700' : 'text-gray-500'
+          leaked ? 'text-red-700' : clean ? 'text-green-700' : 'text-gray-600'
         }`}
       >
         {note}
