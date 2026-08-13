@@ -105,6 +105,16 @@ its logs, and exits non-zero.
 The number is a snapshot of one machine on one day, not a score. What it is
 for is noticing when a change to `internal/introspect` makes things worse.
 
+**Measure on an idle machine.** `corpus.sh` removes the proxy container before
+each stack, because most of these stacks publish `:80` and the baseline would
+otherwise report a port clash that has nothing to do with the stack. That is
+correct for a measurement run and destructive to anything else using devbay at
+the same time: a bay booted in another terminal loses its routes mid-test, and
+the stack being measured at that moment records a 502 it would not otherwise
+have. It reads as a real failure and it is not reproducible afterwards, which
+is the worst kind of number to publish. Run the corpus with nothing else
+touching Docker, and re-run any stack that fails before believing it.
+
 ### The regression check after the 2026-08-12 detection changes
 
 Reading compose healthchecks, mapping `service_completed_successfully` to a
