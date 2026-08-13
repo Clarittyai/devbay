@@ -39,6 +39,8 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
+
+	"github.com/Clarittyai/devbay/internal/lockfile"
 )
 
 const (
@@ -246,7 +248,7 @@ func (p *Proxy) create(ctx context.Context, httpPort, adminPort int) (string, er
 		},
 		HostConfig: &container.HostConfig{
 			PortBindings: network.PortMap{
-				httpP:  []network.PortBinding{{HostIP: anyAddr, HostPort: strconv.Itoa(httpPort)}},
+				httpP:  []network.PortBinding{{HostIP: bindAddr(), HostPort: strconv.Itoa(httpPort)}},
 				adminP: []network.PortBinding{{HostIP: loopbackAddr, HostPort: strconv.Itoa(adminPort)}},
 			},
 			RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
@@ -324,7 +326,13 @@ func (p *Proxy) Detach(ctx context.Context, networkName string) error {
 		Container: ContainerName, Force: true,
 	})
 	delete(p.nets, networkName)
-	if err != nil && !cerrdefs.IsNotFound(err) {
+	// Not-attached is success, for the same reason already-attached is success
+	// in Attach: the caller asked for a state, and the state already holds. A
+	// bay created with --no-boot never published a route, so the proxy never
+	// joined its network -- and reporting that as a failure fails a teardown
+	// that removed everything it was asked to remove.
+	if err != nil && !cerrdefs.IsNotFound(err) &&
+		!strings.Contains(err.Error(), "is not connected to the network") {
 		return fmt.Errorf("proxy: detaching from %s: %w", networkName, err)
 	}
 	return nil
@@ -336,6 +344,26 @@ func (p *Proxy) Detach(ctx context.Context, networkName string) error {
 // being routable, instead of lingering as a hostname that resolves to a
 // container that no longer exists.
 func (p *Proxy) SetRoutes(ctx context.Context, project, bay string, routes []Route) error {
+	// Every devbay command pushes the whole routing table in one atomic load,
+	// which makes this a read-modify-write against state shared by every
+	// devbay process on the machine -- and read-modify-write without a lock
+	// loses updates. Three `devbay new` in parallel each read an empty table,
+	// each add their own bay, and each push: the last one wins and the other
+	// two bays answer devbay's own 404 page at the URL their `created` line
+	// just printed. A later command repairs it, so it presents as two of three
+	// URLs being dead for a while and then not, which is the hardest possible
+	// shape to report and the easiest to dismiss.
+	//
+	// The lock is held across the re-read as well as the write, because a
+	// table read before the lock was taken is exactly the stale copy this
+	// exists to stop being written back.
+	release, err := lockfile.Acquire("devbay-proxy-routes")
+	if err != nil {
+		return err
+	}
+	defer release()
+	p.adoptRoutes(ctx)
+
 	for host, r := range p.routes {
 		if r.Project == project && r.Bay == bay {
 			delete(p.routes, host)
