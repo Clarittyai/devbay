@@ -267,6 +267,25 @@ func (d *detector) composeMounts(svc composetypes.ServiceConfig) ([]manifest.Mou
 			continue
 		}
 		src := v.Source
+		// `~/data` is the developer's home directory, and it is not an
+		// absolute path, so it slipped past the check below and was written
+		// out as `./~/data` -- a literal directory named "~" that cannot
+		// exist, and a boot that fails on a mount source nobody wrote.
+		//
+		// Expanding it would be worse than dropping it, twice over. A
+		// manifest is committed, and one holding /Users/someone/data is a
+		// file that only works for the person who generated it. And every bay
+		// of the project would mount that same directory, so two of them
+		// would share the state devbay exists to keep separate -- which for a
+		// game server, a database, or an upload directory is the corruption
+		// the whole tool is built to prevent.
+		if src == "~" || strings.HasPrefix(src, "~/") {
+			d.gap("service %q binds %s from your home directory; devbay did not carry it over, because "+
+				"a committed manifest cannot name your home and every bay would share one directory. "+
+				"Move it inside the repository, or declare it in `volumes:` to give each bay its own",
+				svc.Name, v.Source)
+			continue
+		}
 		if filepath.IsAbs(src) {
 			r, err := filepath.Rel(d.dir, src)
 			if err != nil || strings.HasPrefix(r, "..") {

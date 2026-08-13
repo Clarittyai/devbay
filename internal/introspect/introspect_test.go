@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	composetypes "github.com/compose-spec/compose-go/v2/types"
+
 	"github.com/Clarittyai/devbay/internal/manifest"
 )
 
@@ -1116,5 +1118,29 @@ func TestOnlyShellFreeHealthchecksAreTranscribed(t *testing.T) {
 		if got := plainCommand(c.script); got != c.plain {
 			t.Errorf("plainCommand(%q) = %v, want %v", c.script, got, c.plain)
 		}
+	}
+}
+
+// A home-relative bind is not a path in the repository, and it is not absolute
+// either, which is how it used to reach the manifest as "./~/data".
+func TestHomeRelativeBindsAreNotCarriedOver(t *testing.T) {
+	d := &detector{dir: t.TempDir(), m: &manifest.Manifest{}, res: &Result{}}
+	mounts, _ := d.composeMounts(composetypes.ServiceConfig{
+		Name: "minecraft",
+		Volumes: []composetypes.ServiceVolumeConfig{
+			{Type: "bind", Source: "~/minecraft_data", Target: "/data"},
+			{Type: "bind", Source: "./config", Target: "/config"},
+		},
+	})
+	for _, mt := range mounts {
+		if strings.Contains(mt.Source, "~") {
+			t.Errorf("carried over %q; a literal ~ directory cannot exist", mt.Source)
+		}
+	}
+	if len(mounts) != 1 || mounts[0].Source != "./config" {
+		t.Errorf("mounts = %v, want only the in-repo one", mounts)
+	}
+	if len(d.res.Gaps) == 0 {
+		t.Error("dropped silently; the developer has no way to know their data directory is gone")
 	}
 }

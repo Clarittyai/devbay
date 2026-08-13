@@ -682,7 +682,8 @@ func (m *Manager) Destroy(ctx context.Context, name string, force bool) error {
 	// but not the first's -- and the first one owns the directory. Destroying
 	// it took the files out from under a bay that was still running, including
 	// whatever had not been committed yet.
-	if shared := m.otherBayUsing(ctx, b); shared != "" {
+	shared := m.otherBayUsing(ctx, b)
+	if shared != "" {
 		m.Log("bay: worktree kept: bay %q is still using it", shared)
 	} else if !b.Adopted || m.wtIsOurs(b.Worktree) {
 		// An adopted worktree belongs to something else -- usually an agent
@@ -694,29 +695,7 @@ func (m *Manager) Destroy(ctx context.Context, name string, force bool) error {
 		// because it happens to be adopted would mean the last bay out never
 		// cleans up, which is a directory and a branch left behind for every
 		// pair of bays that ever shared a branch.
-		// Checked before the worktree goes, while the branch is still
-		// meaningful.
-		hasWork := m.wt.BranchHasWork(b.Branch)
-		if err := m.wt.Remove(b.Branch, force); err != nil {
-			errs = append(errs, err)
-		} else if !hasWork {
-			// A branch with no commits of its own is bookkeeping, and keeping
-			// it makes `devbay rm` followed by `devbay new` come back on the
-			// old commit -- the fix you just committed apparently ignored.
-			// A branch that does carry work is kept, and said so.
-			if err := m.wt.DeleteBranch(b.Branch); err != nil {
-				m.Log("bay: could not delete branch %s: %v", b.Branch, err)
-			}
-		} else {
-			m.Log("bay: branch %s has commits, so it was kept; `git branch -D %s` to discard them",
-				b.Branch, b.Branch)
-		}
-		// The per-project directory that held it goes too, once empty. Left
-		// behind, these accumulate one per repository ever used and make
-		// ~/.devbay look like it is still holding something.
-		if dir := filepath.Dir(b.Worktree); dir != "" && dir != string(filepath.Separator) {
-			_ = os.Remove(dir) // fails harmlessly while other bays remain
-		}
+		errs = append(errs, m.removeWorktree(b, force)...)
 	}
 
 	// The record goes last. If an earlier step failed, the bay is still known
@@ -724,6 +703,18 @@ func (m *Manager) Destroy(ctx context.Context, name string, force bool) error {
 	// survived.
 	if err := m.store.Delete(ctx, name); err != nil {
 		errs = append(errs, err)
+	}
+
+	// Destroying two bays that share a checkout at the same time leaves each
+	// of them looking at the other's record, so both decline to remove it and
+	// the directory survives with nothing pointing at it. Re-asked once this
+	// bay is deregistered, the question has a different answer for whichever
+	// process finishes last, and that one cleans up.
+	if shared != "" && (!b.Adopted || m.wtIsOurs(b.Worktree)) {
+		if still := m.otherBayUsing(ctx, b); still == "" {
+			m.Log("bay: worktree released: %q went too", shared)
+			errs = append(errs, m.removeWorktree(b, force)...)
+		}
 	}
 
 	m.mu.Lock()
@@ -769,6 +760,34 @@ func (m *Manager) clearStrandedWorktree(name string) bool {
 // project holds it turns a dead end into an instruction.
 func (m *Manager) notFound(ctx context.Context, name string) error {
 	return m.NotFound(ctx, name)
+}
+
+// removeWorktree takes the checkout, and the branch when it holds no work.
+func (m *Manager) removeWorktree(b *Bay, force bool) []error {
+	var errs []error
+	// Checked before the worktree goes, while the branch is still meaningful.
+	hasWork := m.wt.BranchHasWork(b.Branch)
+	if err := m.wt.Remove(b.Branch, force); err != nil {
+		errs = append(errs, err)
+	} else if !hasWork {
+		// A branch with no commits of its own is bookkeeping, and keeping it
+		// makes `devbay rm` followed by `devbay new` come back on the old
+		// commit -- the fix you just committed apparently ignored. A branch
+		// that does carry work is kept, and said so.
+		if err := m.wt.DeleteBranch(b.Branch); err != nil {
+			m.Log("bay: could not delete branch %s: %v", b.Branch, err)
+		}
+	} else {
+		m.Log("bay: branch %s has commits, so it was kept; `git branch -D %s` to discard them",
+			b.Branch, b.Branch)
+	}
+	// The per-project directory that held it goes too, once empty. Left
+	// behind, these accumulate one per repository ever used and make
+	// ~/.devbay look like it is still holding something.
+	if dir := filepath.Dir(b.Worktree); dir != "" && dir != string(filepath.Separator) {
+		_ = os.Remove(dir) // fails harmlessly while other bays remain
+	}
+	return errs
 }
 
 // otherBayUsing names a live bay, other than this one, whose worktree is the
