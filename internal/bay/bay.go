@@ -652,7 +652,7 @@ func (m *Manager) Destroy(ctx context.Context, name string, force bool) error {
 		if force && m.clearStrandedWorktree(name) {
 			return nil
 		}
-		return fmt.Errorf("bay: %q does not exist", name)
+		return m.notFound(ctx, name)
 	}
 
 	var errs []error
@@ -673,10 +673,27 @@ func (m *Manager) Destroy(ctx context.Context, name string, force bool) error {
 		errs = append(errs, err)
 	}
 
-	// An adopted worktree belongs to something else -- usually an agent that
-	// created it first -- so devbay leaves it alone. Removing it would delete
-	// work devbay never created.
-	if !b.Adopted {
+	// A worktree another bay is still using is not this bay's to remove.
+	//
+	// Two bays on one branch share one checkout: git allows a branch to be
+	// checked out once, so the second bay adopts the first one's worktree
+	// rather than making a copy, which is how two agents work on the same
+	// branch with a stack each. Adoption protects the second bay's teardown
+	// but not the first's -- and the first one owns the directory. Destroying
+	// it took the files out from under a bay that was still running, including
+	// whatever had not been committed yet.
+	if shared := m.otherBayUsing(ctx, b); shared != "" {
+		m.Log("bay: worktree kept: bay %q is still using it", shared)
+	} else if !b.Adopted || m.wtIsOurs(b.Worktree) {
+		// An adopted worktree belongs to something else -- usually an agent
+		// that created it first -- so devbay leaves it alone. Removing it
+		// would delete work devbay never created.
+		//
+		// Unless devbay created it: the second bay on a branch adopts the
+		// first bay's checkout, and that one is devbay's own. Leaving it
+		// because it happens to be adopted would mean the last bay out never
+		// cleans up, which is a directory and a branch left behind for every
+		// pair of bays that ever shared a branch.
 		// Checked before the worktree goes, while the branch is still
 		// meaningful.
 		hasWork := m.wt.BranchHasWork(b.Branch)
@@ -742,11 +759,121 @@ func (m *Manager) clearStrandedWorktree(name string) bool {
 	return true
 }
 
+// notFound explains a name this repository has no bay for.
+//
+// Bays are scoped to a project, and the state database is not: a name missing
+// here may exist perfectly well one directory away. "does not exist" is then
+// false, and it is false in the least helpful direction -- an agent that has
+// changed directory is told to create a bay that is already running, and a
+// developer goes looking for a bug in devbay's bookkeeping. Saying which
+// project holds it turns a dead end into an instruction.
+func (m *Manager) notFound(ctx context.Context, name string) error {
+	return m.NotFound(ctx, name)
+}
+
+// otherBayUsing names a live bay, other than this one, whose worktree is the
+// same directory. Empty when this bay has the checkout to itself.
+func (m *Manager) otherBayUsing(ctx context.Context, b *Bay) string {
+	if b.Worktree == "" {
+		return ""
+	}
+	all, err := m.store.worktrees(ctx)
+	if err != nil {
+		// Without the list there is no evidence either way, and the safe
+		// direction is the one that does not delete a directory: teardown
+		// continues, and the worktree stays.
+		return "shared (could not confirm)"
+	}
+	for name, path := range all {
+		if name != b.Name && sameDir(path, b.Worktree) {
+			return name
+		}
+	}
+	return ""
+}
+
+// wtIsOurs reports whether a worktree is one devbay created, which is the
+// difference between a checkout it may remove and an agent's own that it may
+// not. Decided by location, the same way adoption is decided.
+func (m *Manager) wtIsOurs(path string) bool {
+	if m.wt == nil || m.wt.Root == "" || path == "" {
+		return false
+	}
+	root, err := filepath.Abs(m.wt.Root)
+	if err != nil {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return false
+	}
+	// Inside the root, and not the root itself or a path that climbs out of it.
+	return rel != "." && !strings.HasPrefix(rel, "..")
+}
+
+// sameDir compares two paths as directories, tolerating the ways the same one
+// gets spelled: a trailing separator, a relative form, an unresolved symlink.
+func sameDir(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	clean := func(p string) string {
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			p = resolved
+		}
+		return filepath.Clean(p)
+	}
+	return clean(a) == clean(b)
+}
+
+// OwningProject names the project a bay belongs to, when that is some project
+// other than this repository's. Bays are scoped to a project and the state
+// database is not, so a name absent here may be running one directory away.
+func (m *Manager) OwningProject(ctx context.Context, name string) (string, bool) {
+	r, ok, err := m.store.Get(ctx, name)
+	if err != nil || !ok {
+		return "", false
+	}
+	if mf, mferr := loadManifest(m.RepoRoot); mferr == nil && mf.Project == r.Project {
+		return "", false
+	}
+	return r.Project, true
+}
+
+// NotFound explains a name this repository has no bay for.
+func (m *Manager) NotFound(ctx context.Context, name string) error {
+	r, ok, err := m.store.Get(ctx, name)
+	if err != nil || !ok {
+		return fmt.Errorf("bay: %q does not exist", name)
+	}
+	// The manifest is read rather than cached because this path runs when
+	// something is already wrong, and a stale project name would make the
+	// message confidently misleading. It may also be missing entirely -- a
+	// directory with no devbay.yaml is a very normal place to mistype a
+	// command from -- and that is still worth answering: which project owns
+	// the bay is the useful half, and it does not depend on knowing this one.
+	if mf, mferr := loadManifest(m.RepoRoot); mferr == nil {
+		if mf.Project == r.Project {
+			return fmt.Errorf("bay: %q does not exist", name)
+		}
+		return fmt.Errorf("bay: %q belongs to project %q, and this repository is %q; run the command from that project",
+			name, r.Project, mf.Project)
+	}
+	return fmt.Errorf("bay: %q belongs to project %q; run the command from that repository", name, r.Project)
+}
+
 // Focus moves the canonical hostname to one bay and takes it from the others.
 func (m *Manager) Focus(ctx context.Context, name string) error {
 	target, ok := m.Get(name)
 	if !ok {
-		return fmt.Errorf("bay: %q does not exist", name)
+		return m.notFound(ctx, name)
 	}
 
 	m.mu.Lock()
@@ -778,7 +905,7 @@ func (m *Manager) Focus(ctx context.Context, name string) error {
 func (m *Manager) RunTask(ctx context.Context, name, task string) (*engine.TaskResult, error) {
 	b, ok := m.Get(name)
 	if !ok {
-		return nil, fmt.Errorf("bay: %q does not exist", name)
+		return nil, m.notFound(ctx, name)
 	}
 	res, err := b.Engine.RunTask(ctx, task)
 	// A task runs a container over the worktree, so it can take ownership of

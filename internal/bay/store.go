@@ -118,6 +118,28 @@ func (s *store) List(ctx context.Context, project string) ([]record, error) {
 	return out, rows.Err()
 }
 
+// worktrees returns the worktree path of every bay on the machine, by name.
+//
+// Not filtered by project: the question it answers is whether a directory is
+// still in use, and a directory does not belong to a project.
+func (s *store) worktrees(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name, worktree FROM bays`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]string{}
+	for rows.Next() {
+		var name, worktree string
+		if err := rows.Scan(&name, &worktree); err != nil {
+			return nil, err
+		}
+		out[name] = worktree
+	}
+	return out, rows.Err()
+}
+
 func (s *store) Get(ctx context.Context, name string) (record, bool, error) {
 	var r record
 	var adopted, focused int
