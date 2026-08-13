@@ -97,6 +97,7 @@ func serverInfo() map[string]any {
 const instructions = `devbay gives each piece of work its own running copy of this repository -- its own worktree, containers, database, ports and browser origin -- so two changes in progress cannot disturb each other.
 
 Work in this order:
+  0. repo_status first, if you do not know how this repository is set up. It says whether devbay can run bays here yet, and repo_init proposes a devbay.yaml when it cannot. manifest_validate checks an edit before you write it.
   1. bay_create once per task, before changing anything.
   2. bay_run_task to verify. Prefer it over running the test command yourself: it starts only the services the task declares, and returns failures with file, line and message rather than output to parse.
   3. bay_url when something has to be opened. Use url for code and public_url for a browser; they are different addresses and are not interchangeable.
@@ -146,6 +147,7 @@ type Server struct {
 func NewServer(mgr *bay.Manager) *Server {
 	s := &Server{mgr: mgr, index: map[string]*Tool{}}
 	s.register()
+	s.registerSetup()
 	return s
 }
 
