@@ -72,8 +72,20 @@ func TaskPlan(m *manifest.Manifest, task string) (*Plan, error) {
 	}
 	roots := append([]string{}, t.Needs...)
 	// The task has to run somewhere. If it names a container explicitly, that
-	// service is part of the subgraph even when it is not in `needs`.
-	if t.In != "" {
+	// service is part of the subgraph even when it is not in `needs`: a task
+	// running inside a service that is starting anyway should run in the real
+	// container, not in a copy of it.
+	//
+	// Unless it needs nothing. `needs: []` is the author saying no service is
+	// required, and that is the case devbay makes a point of -- a unit suite
+	// boots zero containers. Adding the named service there would boot it and
+	// its whole chain, database included, to run tests that asked for none of
+	// it: naming the container that holds the toolchain is how a repository
+	// with its code in subdirectories says where node lives, not a request to
+	// start a stack. With nothing running there is no real container to prefer
+	// anyway, so a throwaway built from that service's image is both the only
+	// option and the right one.
+	if t.In != "" && len(t.Needs) > 0 {
 		roots = append(roots, t.In)
 	}
 	return planFor(m, roots)

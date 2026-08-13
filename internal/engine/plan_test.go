@@ -200,3 +200,23 @@ func TestSeedPlan(t *testing.T) {
 		t.Errorf("SeedPlan on an unseeded service = %v/%v/%v, want nils", p, sources, err)
 	}
 }
+
+// A unit suite that names the container holding its toolchain still boots
+// nothing. Repositories that keep their code in subdirectories have to name a
+// service to find node or python at all, and paying for a database to run them
+// is the cost devbay exists to remove.
+func TestATaskNeedingNothingBootsNothingEvenWhenItNamesAContainer(t *testing.T) {
+	m := fixture(t, "fastapi-template")
+	m.Tasks["lint"] = &manifest.Task{
+		Run:   manifest.Argv{"ruff", "check", "."},
+		Needs: []string{},
+		In:    "backend",
+	}
+	p, err := TaskPlan(m, "lint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Services(); len(got) != 0 {
+		t.Errorf("boots %v; a task declaring needs: [] must boot nothing", got)
+	}
+}

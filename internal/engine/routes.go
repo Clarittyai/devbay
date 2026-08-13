@@ -33,7 +33,7 @@ func (e *Engine) publishRoutes(ctx context.Context) error {
 	primary := e.m.PrimaryService()
 	for _, name := range names {
 		s := e.m.Services[name]
-		if s.IsOneshot() || s.Port == 0 {
+		if s.IsOneshot() || s.Port == 0 || !httpRoutable(s.Port) {
 			continue
 		}
 		routes = append(routes, proxy.Route{
@@ -141,7 +141,7 @@ func (e *Engine) URLs() map[string]string {
 		suffix = ":" + strconv.Itoa(e.prox.HTTPPort)
 	}
 	for name, s := range e.m.Services {
-		if s.IsOneshot() || s.Port == 0 {
+		if s.IsOneshot() || s.Port == 0 || !httpRoutable(s.Port) {
 			continue
 		}
 		out[name] = scheme + e.res.Hostname(name) + suffix
@@ -150,6 +150,35 @@ func (e *Engine) URLs() map[string]string {
 		}
 	}
 	return out
+}
+
+// httpRoutable reports whether a port is worth putting behind the HTTP proxy.
+//
+// A browser origin for postgres is not a useful address: the proxy speaks
+// HTTP, the database does not, and the URL can only ever fail. It was still
+// printed beside the working ones and returned from bay_url, so an agent
+// looking for "the address of the database" could reasonably take it and get
+// a protocol error instead of a connection. Code that wants a datastore wants
+// the host address, which `devbay url` still reports as `url`.
+//
+// The list is registered ports of protocols that are definitively not HTTP.
+// Anything unrecognized is routed, because the cost of guessing wrong in that
+// direction is one unused hostname rather than a missing one.
+func httpRoutable(port int) bool {
+	switch port {
+	case 5432, // postgres
+		3306,         // mysql, mariadb
+		6379,         // redis, valkey
+		27017,        // mongodb
+		5672,         // amqp
+		9092,         // kafka
+		11211,        // memcached
+		1433,         // sql server
+		25, 465, 587, // smtp
+		2181: // zookeeper
+		return false
+	}
+	return true
 }
 
 // checkOrigin tells the developer when their application is up but refuses the
