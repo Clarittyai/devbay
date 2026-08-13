@@ -256,9 +256,27 @@ func (s *Server) repoStatus(ctx context.Context, _ json.RawMessage) (any, error)
 	out["diagnostics"] = diagnostics(report)
 	out["ready"] = report.OK()
 
+	// A task with no `report:` runs fine and comes back as text, so the one
+	// thing bay_run_task exists to give an agent -- a file, a line and an
+	// assertion -- is missing, and nothing about the call says so except a
+	// `parsed: false` that is easy to read past. Said here because an agent
+	// that arrives at a repository someone else set up never sees repo_init's
+	// version of this.
+	typed := 0
+	for _, t := range m.Tasks {
+		if t != nil && t.Report != nil {
+			typed++
+		}
+	}
+
 	switch {
 	case !report.OK():
 		out["next"] = "the manifest does not validate; each diagnostic names the key to fix"
+	case len(tasks) > 0 && typed == 0:
+		out["untyped_tasks"] = true
+		out["next"] = fmt.Sprintf("ready, but no task declares `report:`, so bay_run_task will return output "+
+			"rather than failures with a file and a line. Add `report:` to %s if you want to act on failures "+
+			"directly; otherwise call bay_create", tasks[0])
 	case len(tasks) == 0:
 		// Worth saying rather than leaving to be discovered: with no tasks
 		// declared there is nothing to run, and the agent's only remaining
