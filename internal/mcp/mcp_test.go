@@ -111,10 +111,37 @@ func TestEveryBayToolTakesAnExplicitBayArgument(t *testing.T) {
 		case "bay_list", "bay_create":
 			continue // one lists, the other names the bay it makes
 		}
+		// The rule is about bay state, which is what a stateless protocol
+		// cannot carry between calls. The repository a server was started in
+		// is not that: it is fixed for the life of the connection and there is
+		// only ever one, so a tool about the repository has nothing to name.
+		if !strings.HasPrefix(tool.Name, "bay_") {
+			continue
+		}
 		props, _ := tool.InputSchema["properties"].(map[string]any)
 		if _, ok := props["bay"]; !ok {
 			t.Errorf("%s has no bay argument; the protocol is stateless, so it cannot infer one", tool.Name)
 		}
+	}
+}
+
+// The setup tools exist so an agent does not have to shell out to the CLI to
+// get a repository ready, which is the thing this package claims not to be.
+func TestTheSurfaceCoversGettingARepositoryReady(t *testing.T) {
+	s := newProtocolServer()
+	have := map[string]bool{}
+	for _, tool := range s.Tools() {
+		have[tool.Name] = true
+	}
+	for _, want := range []string{"repo_status", "repo_init", "manifest_validate"} {
+		if !have[want] {
+			t.Errorf("no %s tool: an agent asked to set a repository up has to shell out", want)
+		}
+	}
+	// R2 is a checkpoint for a human. A tool that granted it would remove the
+	// only thing standing between an injected manifest and an approved command.
+	if have["repo_approve"] || have["manifest_approve"] {
+		t.Error("approval is exposed as a tool; an agent must not be able to approve its own commands")
 	}
 }
 

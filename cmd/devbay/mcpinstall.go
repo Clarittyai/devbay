@@ -139,7 +139,10 @@ func cmdMCPInstall(args []string) error {
 	}
 
 	if wrote > 0 {
-		fmt.Printf("\n%s ask your agent to create a bay and run a task. It has seven tools:\n", green("done"))
+		// Counted rather than spelled out: the last time this said "seven" it
+		// was a number that had to be remembered whenever a tool was added.
+		fmt.Printf("\n%s ask your agent to set the repository up, create a bay and run a task. It has %d tools:\n",
+			green("done"), len(toolNames()))
 		fmt.Printf("  %s\n", dim(strings.Join(toolNames(), ", ")))
 	}
 	return nil

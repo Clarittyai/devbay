@@ -31,6 +31,9 @@ const RulesBody = `## Running and testing this repository
 This repository uses devbay. Every branch gets its own containers, database,
 ports and browser origin, so several can run at once without colliding.
 
+- If you do not know whether this repository is set up for devbay yet, ask
+  ` + "`repo_status`" + `. It names the next step, and ` + "`repo_init`" + `
+  proposes a devbay.yaml when there is none.
 - Create a bay before running or verifying anything: ` + "`bay_create`" + `.
 - Run tests with ` + "`bay_run_task`" + `, not by running the test command
   yourself. It starts only the services the task declares it needs, so a unit

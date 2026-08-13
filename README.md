@@ -252,7 +252,15 @@ is stripped again.
 
 ## For agents
 
-`devbay mcp` speaks the Model Context Protocol on stdio. Seven tools:
+`devbay mcp` speaks the Model Context Protocol on stdio, to both the current
+spec and the handshake every shipping client still opens with. Three tools get
+a repository ready — `repo_status`, `repo_init`, `manifest_validate` — because
+an agent that has to shell out to a CLI to set devbay up is reading terminal
+output again, which is the thing this interface exists to stop. Approval is
+deliberately not among them: R2 is a checkpoint for a human, and an agent that
+could approve its own commands would be holding both halves of it.
+
+Then seven for driving bays:
 `bay_create`, `bay_list`, `bay_run_task`, `bay_logs`, `bay_url`, `bay_status`,
 `bay_destroy`.
 

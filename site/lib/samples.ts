@@ -251,9 +251,10 @@ export const mcpInstall: Line[] = [
   p(''),
   [
     { t: 'ok', s: 'done' },
-    { t: 'plain', s: ' ask your agent to create a bay and run' },
+    { t: 'plain', s: ' ask your agent to set the repository up,' },
   ],
-  [{ t: 'plain', s: '     a task. It has seven tools:' }],
+  [{ t: 'plain', s: '     create a bay and run a task. It has 10 tools:' }],
+  [{ t: 'dim', s: '  repo_status, repo_init, manifest_validate,' }],
   [{ t: 'dim', s: '  bay_create, bay_list, bay_run_task,' }],
   [{ t: 'dim', s: '  bay_logs, bay_url, bay_status, bay_destroy' }],
 ];
