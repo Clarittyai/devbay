@@ -96,7 +96,9 @@ fetch_to "$base/$archive" "$tmp/$archive" ||
 
 # Verified, because this script is piped into a shell and the whole point of
 # publishing checksums is that somebody checks them.
-if fetch_to "$base/checksums.txt" "$tmp/checksums.txt" 2>/dev/null; then
+if [ "${DEVBAY_SKIP_CHECKSUM:-}" = 1 ]; then
+	printf '  DEVBAY_SKIP_CHECKSUM=1; installing without verifying\n'
+elif fetch_to "$base/checksums.txt" "$tmp/checksums.txt" 2>/dev/null; then
 	if command -v sha256sum >/dev/null 2>&1; then
 		( cd "$tmp" && grep " $archive\$" checksums.txt | sha256sum -c - >/dev/null ) ||
 			die "checksum mismatch for $archive; refusing to install"
@@ -104,10 +106,20 @@ if fetch_to "$base/checksums.txt" "$tmp/checksums.txt" 2>/dev/null; then
 		( cd "$tmp" && grep " $archive\$" checksums.txt | shasum -a 256 -c - >/dev/null ) ||
 			die "checksum mismatch for $archive; refusing to install"
 	else
-		printf '  no sha256sum or shasum; skipping checksum verification\n'
+		# Failing rather than continuing, because the two ways verification
+		# gets skipped are both reachable by whoever is in a position to
+		# tamper with the download: serve a broken checksums.txt, or simply
+		# not serve it. A script piped into a shell that announces it is not
+		# checking and installs anyway is one an attacker can always talk out
+		# of checking. Every platform this script runs on ships one of these
+		# tools; a machine without either is unusual enough to say so
+		# explicitly with DEVBAY_SKIP_CHECKSUM=1.
+		die "no sha256sum or shasum, so the download cannot be verified.
+  Install one, or set DEVBAY_SKIP_CHECKSUM=1 to install without verifying."
 	fi
 else
-	printf '  checksums.txt is unavailable; skipping verification\n'
+	die "could not fetch $base/checksums.txt, so the download cannot be verified.
+  Retry, or set DEVBAY_SKIP_CHECKSUM=1 to install without verifying."
 fi
 
 tar -xzf "$tmp/$archive" -C "$tmp" "$BIN"
