@@ -319,11 +319,20 @@ func (s *Server) url(ctx context.Context, raw json.RawMessage) (any, error) {
 	if ep, err := res.Endpoint(service, engine.PlaneHost); err == nil {
 		out["url"] = "http://" + ep.Addr()
 	}
-	out["public_url"] = res.Scheme + "://" + res.Hostname(service)
-	// Spelling out which is which prevents the mistake this distinction exists
-	// to prevent: using the browser origin from code, where it will not
-	// resolve, or the loopback address in a browser, where it is not isolated.
-	out["note"] = "call `url` from code; open `public_url` in a browser"
+	// Only when there is actually a route. A service the proxy does not serve
+	// -- a database, a queue -- has no browser origin, and returning a
+	// plausible-looking one invites an agent to fetch it and read the protocol
+	// error as an application fault.
+	if u, routed := b.Engine.URLs()[service]; routed {
+		out["public_url"] = u
+		// Spelling out which is which prevents the mistake this distinction
+		// exists to prevent: using the browser origin from code, where it will
+		// not resolve, or the loopback address in a browser, where it is not
+		// isolated.
+		out["note"] = "call `url` from code; open `public_url` in a browser"
+	} else {
+		out["note"] = "this service is not served over HTTP, so it has no browser origin; connect to `url`"
+	}
 	return out, nil
 }
 
@@ -386,6 +395,13 @@ func errMissing(field string) error { return fmt.Errorf("%s is required", field)
 // unknownBay names what does exist. A bare "not found" makes an agent guess;
 // the list makes the next call obvious.
 func unknownBay(s *Server, ctx context.Context, name string) error {
+	// A bay of that name may exist under another project, which an agent
+	// working across repositories will hit. Telling it the bay does not exist
+	// invites it to create a second one alongside the first.
+	if project, ok := s.mgr.OwningProject(ctx, name); ok {
+		return fmt.Errorf("bay %q belongs to project %q, which is not this repository; "+
+			"run the agent from that project to reach it", name, project)
+	}
 	list, err := s.mgr.List(ctx)
 	if err != nil || len(list) == 0 {
 		return fmt.Errorf("no bay named %q, and none exist; create one with bay_create", name)

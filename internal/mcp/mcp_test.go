@@ -232,3 +232,95 @@ func TestWrongProtocolVersionIsRejected(t *testing.T) {
 		t.Errorf("expected an error for jsonrpc 1.0, got %v", resp)
 	}
 }
+
+// The tests below open a connection the way a client does, rather than
+// calling a method the way the rest of this file does. Every tool worked over
+// raw JSON-RPC while no shipping client could connect at all, because none of
+// them ever opened the connection first.
+
+func TestLegacyClientCanOpenAConnection(t *testing.T) {
+	s := newProtocolServer()
+	resp := call(t, s, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}`)
+
+	if e, ok := resp["error"].(map[string]any); ok {
+		t.Fatalf("a client that opens with initialize cannot connect: %v", e)
+	}
+	res, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("no result: %v", resp)
+	}
+	if got := res["protocolVersion"]; got != "2025-06-18" {
+		t.Errorf("protocolVersion = %v, want the version the client asked for", got)
+	}
+	if _, ok := res["capabilities"].(map[string]any)["tools"]; !ok {
+		t.Error("tools capability was not declared, so a client will not list tools")
+	}
+	if info, ok := res["serverInfo"].(map[string]any); !ok || info["name"] != "devbay" {
+		t.Errorf("serverInfo = %v, want devbay named", res["serverInfo"])
+	}
+}
+
+func TestUnknownLegacyVersionStillConnects(t *testing.T) {
+	s := newProtocolServer()
+	resp := call(t, s, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}`)
+	res, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("a legacy client cannot fall forward, so it must still be answered: %v", resp)
+	}
+	if got := res["protocolVersion"]; got != protocolLegacy[0] {
+		t.Errorf("protocolVersion = %v, want the newest legacy version %s", got, protocolLegacy[0])
+	}
+}
+
+func TestInitializedNotificationIsSilent(t *testing.T) {
+	s := newProtocolServer()
+	if resp := call(t, s, `{"jsonrpc":"2.0","method":"notifications/initialized"}`); resp != nil {
+		t.Errorf("a notification was answered: %v", resp)
+	}
+}
+
+func TestModernClientDiscoversTheServer(t *testing.T) {
+	s := newProtocolServer()
+	resp := call(t, s, `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`)
+
+	res, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("server/discover must be implemented; got %v", resp)
+	}
+	versions, _ := res["supportedVersions"].([]any)
+	if len(versions) == 0 || versions[0] != protocolModern {
+		t.Errorf("supportedVersions = %v, want %s first", versions, protocolModern)
+	}
+	if res["instructions"] == "" || res["instructions"] == nil {
+		t.Error("no instructions: an agent is told what it may call but not how to work")
+	}
+	meta, _ := res["_meta"].(map[string]any)
+	if _, ok := meta["io.modelcontextprotocol/serverInfo"]; !ok {
+		t.Error("serverInfo missing from _meta")
+	}
+}
+
+func TestUnsupportedModernVersionNamesWhatIsSupported(t *testing.T) {
+	s := newProtocolServer()
+	resp := call(t, s, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"1900-01-01"}}}`)
+
+	e, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected UnsupportedProtocolVersionError, got %v", resp)
+	}
+	if code := int(e["code"].(float64)); code != codeUnsupportedVersion {
+		t.Errorf("code = %d, want %d so the client retries instead of falling back", code, codeUnsupportedVersion)
+	}
+	data, _ := e["data"].(map[string]any)
+	if supported, _ := data["supported"].([]any); len(supported) == 0 {
+		t.Error("the error must name the versions the server does support")
+	}
+}
+
+func TestASupportedVersionInMetaIsServed(t *testing.T) {
+	s := newProtocolServer()
+	resp := call(t, s, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`)
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("a supported version was rejected: %v", resp)
+	}
+}
