@@ -136,6 +136,17 @@ func cmdDoctor(ctx context.Context) error {
 				"Stopping whatever holds :80 gives you bare hostnames.")
 	}
 
+	// Said plainly, because it is the one thing about devbay's networking that
+	// a developer could get wrong by assuming the safer default. Service ports
+	// are loopback-bound; the proxy is not, and cannot be -- a bay URL has to
+	// be openable from a phone or a simulator, and neither of those is on this
+	// machine's loopback.
+	note("bay hostnames answer on every network interface",
+		"Service ports stay on 127.0.0.1, but the proxy binds :80 on all interfaces so a bay can be "+
+			"opened from a phone or a simulator. Anything that can reach this machine on port 80 can "+
+			"reach a bay by asking for its hostname. On an untrusted network, set DEVBAY_PROXY_BIND=127.0.0.1 "+
+			"to keep bays on loopback -- external devices then cannot open them either.")
+
 	if _, err := os.Stat("/etc/resolver"); os.IsNotExist(err) {
 		note("Safari and curl will not resolve bay hostnames",
 			"Chrome and Firefox resolve *.localhost themselves and need no setup. "+

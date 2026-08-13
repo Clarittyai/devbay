@@ -98,6 +98,7 @@ func cmdInit(ctx context.Context, args []string) error {
 
 	// Verification is what makes a generated file trustworthy: it is the
 	// difference between "this parses" and "this works".
+	unverified := false
 	if *check {
 		verified, err := verifyProposal(ctx, dir, data, modelPatcher())
 		if err != nil {
@@ -110,13 +111,24 @@ func cmdInit(ctx context.Context, args []string) error {
 			fmt.Fprintf(os.Stderr, "%s the proposal did not boot\n", red("unverified"))
 			if f := verified.LastFailure(); f != nil {
 				fmt.Fprintf(os.Stderr, "  %s\n", f.Error())
+				res.Unverified = f.Error()
 				if f.Logs != "" {
 					fmt.Fprintf(os.Stderr, "%s\n", dim(indent(f.Logs, "    ")))
 				}
 			}
 			if verified.Note != "" {
 				fmt.Fprintf(os.Stderr, "  %s\n", dim(verified.Note))
+				res.Unverified = strings.TrimSpace(res.Unverified + "\n" + verified.Note)
 			}
+			if res.Unverified == "" {
+				res.Unverified = "the proposal did not boot"
+			}
+			// Re-render so the file carries the failure. A manifest that did
+			// not boot must not be indistinguishable from one that did.
+			if data, err = introspect.Render(res); err != nil {
+				return err
+			}
+			unverified = true
 		}
 	}
 
@@ -152,6 +164,9 @@ func cmdInit(ctx context.Context, args []string) error {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "\nwrote %s — finish the items above, then run `devbay validate .`\n", bold(out))
+		if unverified {
+			return fmt.Errorf("the proposal did not boot; the failure is recorded at the top of %s", out)
+		}
 		return nil
 	}
 
@@ -166,6 +181,14 @@ func cmdInit(ctx context.Context, args []string) error {
 	}
 	fmt.Printf("%s %s (%d services, %d tasks)\n", green("wrote"), bold(out),
 		len(res.Manifest.Services), len(res.Manifest.Tasks))
+
+	// A failed verification is a failure, and has to exit like one. `devbay
+	// init --verify` in a script or driven by an agent is a check, and a check
+	// that prints "did not boot" and exits zero has told the caller the
+	// opposite of what it found.
+	if unverified {
+		return fmt.Errorf("the proposal did not boot; the failure is recorded at the top of %s", out)
+	}
 	fmt.Println(dim("  review it, then: devbay new <name>"))
 	return nil
 }

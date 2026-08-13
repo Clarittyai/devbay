@@ -105,6 +105,52 @@ its logs, and exits non-zero.
 The number is a snapshot of one machine on one day, not a score. What it is
 for is noticing when a change to `internal/introspect` makes things worse.
 
+### The regression check after the 2026-08-12 detection changes
+
+Reading compose healthchecks, mapping `service_completed_successfully` to a
+oneshot, folding CI services into the compose service they duplicate, and
+finding tasks below the repository root all change what `init` writes, so the
+corpus was consulted before and after. The full run was not repeated; two
+narrower checks were, and both are cheap enough to repeat on any future change
+to detection.
+
+**Detection, all 37 stacks with a compose file.** `init` then `validate`, no
+containers, comparing the old binary with the new one built from a worktree at
+the previous commit:
+
+| | before | after |
+|---|---|---|
+| services detected | 75 | 75 |
+| tasks detected | 3 | 11 |
+| stacks with at least one task | 3 | 9 |
+| validation errors | 0 | 0 |
+
+The services are unchanged, which is the point: the change was meant to read
+more of what a repository already says, not to invent more of it.
+
+**Boots, the eight stacks that carry a healthcheck.** Six were run in full,
+including all five whose `depends_on` gates on `condition: service_healthy` —
+the ones where transcribing a healthcheck wrongly turns into a stack that never
+comes up. devbay served every one:
+
+```
+nginx-golang-postgres  compose=down  devbay=up-200
+nginx-golang-mysql     compose=up    devbay=up-200
+spring-postgres        compose=down  devbay=up-200
+postgresql-pgadmin     compose=down  devbay=up-302
+react-java-mysql       compose=up    devbay=up-200
+nginx-aspnet-mysql     compose=up    devbay=up-200
+```
+
+Two of these are worth reading twice. `nginx-golang-postgres` ships
+`test: ["CMD", "pg_isready"]`, the probe that answers on the unix socket while
+the entrypoint's temporary init server is up and the real one is not listening
+yet — so the racy healthcheck this release repairs is not hypothetical, it is
+in the corpus. And `nginx-golang-mysql` writes its healthcheck as a shell
+command substituting a secret file, which a manifest cannot express without
+breaking R1; that one is declined, the reason is recorded in the generated
+file, and the service falls back to the image-family probe and boots.
+
 It is not in CI: it needs the network, most of an hour, and tens of gigabytes
 of images. It is what to run before believing a change to `internal/introspect`
 is an improvement, because that package cannot be judged against fixtures
