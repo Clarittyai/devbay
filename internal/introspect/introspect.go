@@ -114,7 +114,30 @@ type detector struct {
 	dir string
 	m   *manifest.Manifest
 	res *Result
+
+	// composeRunsTheApp records that a compose file described the application
+	// itself, not merely the things it talks to.
+	//
+	// It makes the language conventions stop adding services. A repository
+	// whose compose file runs the app has already said how it runs, in a file
+	// its authors wrote and use; package.json's `start` script is usually the
+	// very same program that service runs. Adding it again produced a
+	// duplicate that claimed the bay hostname, was wired to no database, and
+	// exited on boot -- so a stack that composed perfectly well came up
+	// degraded, and the service that failed was one the repository never had.
+	//
+	// Datastores do not count, because "compose brings up postgres and redis,
+	// the app runs from package.json" is a normal way to work, and there the
+	// conventions are the only thing that knows how to start the application.
+	composeRunsTheApp bool
 }
+
+// conventionsMayAddServices reports whether guessing a service is still useful.
+//
+// Tasks are exempt on purpose: a test script is worth picking up from
+// package.json however the app is started, because a compose file describes
+// how to run the app and says nothing about how to test it.
+func (d *detector) conventionsMayAddServices() bool { return !d.composeRunsTheApp }
 
 func (d *detector) note(src Source, path, detail string) {
 	rel := path
@@ -659,6 +682,13 @@ func (d *detector) fromCompose(ctx context.Context) {
 					fmt.Sprintf("service %q restarts %s", name, r))
 			}
 			d.m.Services[name] = s
+			// Set here rather than at the top of the loop: a compose file whose
+			// every service was unusable described nothing, and the conventions
+			// are the only thing left that can. A build stanza makes it the
+			// application by definition -- nobody builds an image for postgres.
+			if s.Build != nil || !datastore(s.Image) {
+				d.composeRunsTheApp = true
+			}
 			if s.Build == nil {
 				d.note(SourceCompose, path, fmt.Sprintf("service %q from image %s", name, s.Image))
 			}
@@ -877,7 +907,7 @@ func (d *detector) fromProcfile() {
 				continue
 			}
 			key := slug(proc)
-			if key == "" || d.m.Services[key] != nil {
+			if key == "" || d.m.Services[key] != nil || !d.conventionsMayAddServices() {
 				continue
 			}
 			argv, env := splitEnvPrefix(strings.Fields(cmd))
@@ -963,6 +993,10 @@ func (d *detector) fromPackageJSON() {
 		if _, has := pkg.Scripts[script]; !has || d.m.Services["web"] != nil {
 			continue
 		}
+		if !d.conventionsMayAddServices() {
+			// The compose file already runs this application.
+			break
+		}
 		d.m.Services["web"] = &manifest.Service{
 			Start:   manifest.Argv{pm, "run", script},
 			Port:    port,
@@ -993,7 +1027,7 @@ func (d *detector) fromPackageJSON() {
 }
 
 func (d *detector) fromPython() {
-	if _, err := os.Stat(filepath.Join(d.dir, "manage.py")); err == nil {
+	if _, err := os.Stat(filepath.Join(d.dir, "manage.py")); err == nil && d.conventionsMayAddServices() {
 		if d.m.Services["web"] == nil {
 			d.m.Services["web"] = &manifest.Service{
 				Start: manifest.Argv{"python", "manage.py", "runserver", "0.0.0.0:8000"},

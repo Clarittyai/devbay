@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	neturl "net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -319,11 +320,13 @@ func (r *Resolver) url(svc string, s *manifest.Service, plane Plane) (string, er
 
 	var auth string
 	if u := dbUser(s); u != "" {
-		auth = u
+		// Escaped, because a password is arbitrary text and a DSN is a URL: a
+		// '@' or '/' in one silently moves the host or the database name.
 		if p := dbPassword(s); p != "" {
-			auth += ":" + p
+			auth = neturl.UserPassword(u, p).String() + "@"
+		} else {
+			auth = neturl.User(u).String() + "@"
 		}
-		auth += "@"
 	}
 
 	var path string
@@ -365,12 +368,54 @@ func schemeFor(s *manifest.Service) string {
 
 // The official images agree on how they are configured; these read the answer
 // the manifest already gave rather than asking for it again.
+//
+// They also fill in the user those images default to when the manifest names
+// only a password, which is how most compose files are written: `postgres:16`
+// with POSTGRES_PASSWORD and no POSTGRES_USER is the single most common
+// database service there is, because the image defaults the superuser to
+// "postgres". Requiring the name to be written out produced a DSN with no
+// credentials at all, and postgres rejects that with "no PostgreSQL user name
+// specified in startup packet" -- an error about the application, from a
+// connection string the application never wrote.
 func dbUser(s *manifest.Service) string {
-	return firstEnv(s, "POSTGRES_USER", "MYSQL_USER", "MONGO_INITDB_ROOT_USERNAME", "RABBITMQ_DEFAULT_USER", "MINIO_ROOT_USER")
+	u, _ := dbCredentials(s)
+	return u
 }
 
 func dbPassword(s *manifest.Service) string {
-	return firstEnv(s, "POSTGRES_PASSWORD", "MYSQL_PASSWORD", "MONGO_INITDB_ROOT_PASSWORD", "RABBITMQ_DEFAULT_PASS", "MINIO_ROOT_PASSWORD")
+	_, p := dbCredentials(s)
+	return p
+}
+
+func dbCredentials(s *manifest.Service) (user, password string) {
+	switch schemeFor(s) {
+	case "postgres":
+		user, password = firstEnv(s, "POSTGRES_USER"), firstEnv(s, "POSTGRES_PASSWORD")
+		if user == "" && password != "" {
+			user = "postgres"
+		}
+	case "mysql":
+		user, password = firstEnv(s, "MYSQL_USER"), firstEnv(s, "MYSQL_PASSWORD")
+		if user == "" {
+			// The root password is the one MySQL's image always requires, so
+			// it is the credential a compose file is most likely to carry.
+			if rp := firstEnv(s, "MYSQL_ROOT_PASSWORD"); rp != "" {
+				user, password = "root", rp
+			}
+		}
+	case "mongodb":
+		// Mongo starts without authentication unless both are given, so a
+		// half-filled pair is not a credential.
+		user, password = firstEnv(s, "MONGO_INITDB_ROOT_USERNAME"), firstEnv(s, "MONGO_INITDB_ROOT_PASSWORD")
+		if user == "" || password == "" {
+			return "", ""
+		}
+	case "amqp":
+		user, password = firstEnv(s, "RABBITMQ_DEFAULT_USER"), firstEnv(s, "RABBITMQ_DEFAULT_PASS")
+	default:
+		user, password = firstEnv(s, "MINIO_ROOT_USER"), firstEnv(s, "MINIO_ROOT_PASSWORD")
+	}
+	return user, password
 }
 
 func dbName(s *manifest.Service, fallback string) string {
