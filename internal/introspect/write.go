@@ -47,6 +47,17 @@ func Render(res *Result) ([]byte, error) {
 		}
 	}
 
+	// Ahead of the gaps, because it is the more serious statement: the gaps say
+	// what devbay could not decide, this says that what it did decide does not
+	// work.
+	if res.Unverified != "" {
+		b.WriteString("#\n# THIS DID NOT BOOT — `devbay init --verify` started these services and\n")
+		b.WriteString("# they did not come up. The file is here to be repaired, not to be run:\n")
+		for _, line := range strings.Split(strings.TrimRight(res.Unverified, "\n"), "\n") {
+			fmt.Fprintf(&b, "#   %s\n", line)
+		}
+	}
+
 	if len(res.Gaps) > 0 {
 		b.WriteString("#\n# STILL TO DECIDE — devbay could not work these out:\n")
 		for _, g := range res.Gaps {

@@ -1072,3 +1072,49 @@ services:
 		t.Errorf("target = %q, want development", b.Target)
 	}
 }
+
+// The probe repair and the R1 boundary around transcribed healthchecks. Both
+// decide what a generated manifest does at boot, and both are easy to get
+// subtly wrong in a way no fixture would notice.
+
+func TestSocketRacingProbesAreForcedOverTCP(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		in   manifest.Argv
+		want manifest.Argv
+	}{
+		{"bare pg_isready", manifest.Argv{"pg_isready"}, manifest.Argv{"pg_isready", "-h", "127.0.0.1"}},
+		{"pg_isready with user", manifest.Argv{"pg_isready", "-U", "app"}, manifest.Argv{"pg_isready", "-U", "app", "-h", "127.0.0.1"}},
+		{"mysqladmin", manifest.Argv{"mysqladmin", "ping"}, manifest.Argv{"mysqladmin", "ping", "-h", "127.0.0.1"}},
+		{"already has a host", manifest.Argv{"pg_isready", "-h", "db"}, manifest.Argv{"pg_isready", "-h", "db"}},
+		{"long form host", manifest.Argv{"pg_isready", "--host=db"}, manifest.Argv{"pg_isready", "--host=db"}},
+		{"absolute path", manifest.Argv{"/usr/bin/pg_isready"}, manifest.Argv{"/usr/bin/pg_isready", "-h", "127.0.0.1"}},
+		{"someone else's probe", manifest.Argv{"redis-cli", "ping"}, manifest.Argv{"redis-cli", "ping"}},
+	} {
+		h := &manifest.Health{Cmd: append(manifest.Argv{}, c.in...)}
+		forceProbeOverTCP(h)
+		if strings.Join(h.Cmd, " ") != strings.Join(c.want, " ") {
+			t.Errorf("%s: got %v, want %v", c.name, h.Cmd, c.want)
+		}
+	}
+}
+
+func TestOnlyShellFreeHealthchecksAreTranscribed(t *testing.T) {
+	for _, c := range []struct {
+		script string
+		plain  bool
+	}{
+		{"pg_isready -U inkwell -d inkwell", true},
+		{"curl -f http://localhost:8080/health", true},
+		{"nc -z localhost 5432", true},
+		{`mysqladmin ping -h 127.0.0.1 --password="$(cat /run/secrets/db-password)"`, false},
+		{"pg_isready -U $POSTGRES_USER", false},
+		{"test -f /tmp/ready && echo ok", false},
+		{"curl -f http://localhost/ || exit 1", false},
+		{"redis-cli ping | grep PONG", false},
+	} {
+		if got := plainCommand(c.script); got != c.plain {
+			t.Errorf("plainCommand(%q) = %v, want %v", c.script, got, c.plain)
+		}
+	}
+}
