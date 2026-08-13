@@ -28,7 +28,7 @@ func cmdWatch(ctx context.Context, args []string) error {
 
 	b, ok := m.Get(args[0])
 	if !ok {
-		return fmt.Errorf("no bay named %q", args[0])
+		return m.NotFound(ctx, args[0])
 	}
 
 	w, err := watcher.New(b.Worktree, b.Manifest, b.Engine,

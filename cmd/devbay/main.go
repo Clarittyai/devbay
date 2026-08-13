@@ -46,6 +46,9 @@ const usage = `devbay — parallel, isolated local environments for coding agent
 
   DEVBAY_EGRESS=1        enforce each service's declared egress allowlist
   DEVBAY_MAX_BAYS=5      cool the oldest bay when a new one would exceed this
+  DEVBAY_PROXY_BIND=127.0.0.1
+                         keep bay hostnames on loopback; the default binds
+                         every interface so a phone or simulator can open them
 `
 
 func main() {
@@ -236,7 +239,7 @@ func cmdStatus(ctx context.Context, args []string) error {
 
 	b, ok := m.Get(args[0])
 	if !ok {
-		return fmt.Errorf("no bay named %q", args[0])
+		return m.NotFound(ctx, args[0])
 	}
 	info, err := m.Describe(ctx, b)
 	if err != nil {
@@ -328,7 +331,7 @@ func cmdLogs(ctx context.Context, args []string) error {
 
 	b, ok := m.Get(fs.Arg(0))
 	if !ok {
-		return fmt.Errorf("no bay named %q", fs.Arg(0))
+		return m.NotFound(ctx, fs.Arg(0))
 	}
 	service := fs.Arg(1)
 	if service == "" {
@@ -354,7 +357,7 @@ func cmdURL(ctx context.Context, args []string) error {
 
 	b, ok := m.Get(args[0])
 	if !ok {
-		return fmt.Errorf("no bay named %q", args[0])
+		return m.NotFound(ctx, args[0])
 	}
 	service := b.Manifest.PrimaryService()
 	if len(args) > 1 {
@@ -364,7 +367,14 @@ func cmdURL(ctx context.Context, args []string) error {
 	if ep, err := res.Endpoint(service, engine.PlaneHost); err == nil {
 		fmt.Printf("%-12s http://%s\n", "url", ep.Addr())
 	}
-	fmt.Printf("%-12s %s://%s\n", "public_url", res.Scheme, res.Hostname(service))
+	// A browser origin only for a service the proxy actually serves. A
+	// database has none, and printing one it would never answer on is an
+	// address that can only waste the reader's time.
+	if u, routed := b.Engine.URLs()[service]; routed {
+		fmt.Printf("%-12s %s\n", "public_url", u)
+	} else {
+		fmt.Println(dim("  not served over HTTP, so it has no browser origin"))
+	}
 	return nil
 }
 
@@ -399,7 +409,7 @@ func cmdState(ctx context.Context, which string, args []string) error {
 
 	b, ok := m.Get(args[0])
 	if !ok {
-		return fmt.Errorf("no bay named %q", args[0])
+		return m.NotFound(ctx, args[0])
 	}
 
 	start := time.Now()
@@ -472,6 +482,7 @@ func cmdMCP(ctx context.Context, args []string) error {
 	}
 	defer m.Close()
 
+	mcp.Version = version
 	srv := mcp.NewServer(m)
 	if *socket != "" {
 		go func() { _ = srv.ListenUnix(ctx, *socket) }()
@@ -540,13 +551,27 @@ func printURLs(info bay.Info) {
 	if len(info.URLs) == 0 {
 		return
 	}
+	// A degraded boot leaves routes published for services that never started,
+	// and printing those addresses in the same list as the working ones says
+	// the bay is up when half of it is not. The address is still worth
+	// showing -- it is where the service will answer once it starts -- so it
+	// is marked rather than hidden.
+	state := make(map[string]string, len(info.Services))
+	for _, s := range info.Services {
+		state[s.Name] = s.State
+	}
+
 	keys := make([]string, 0, len(info.URLs))
 	for k := range info.URLs {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		fmt.Printf("  %-16s %s\n", k, info.URLs[k])
+		line := fmt.Sprintf("  %-16s %s", k, info.URLs[k])
+		if st, ok := state[k]; ok && st != "running" {
+			line += "  " + dim("("+st+", so this will not answer)")
+		}
+		fmt.Println(line)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/moby/moby/client"
 
+	"github.com/Clarittyai/devbay/internal/lockfile"
 	"github.com/Clarittyai/devbay/internal/manifest"
 	"github.com/Clarittyai/devbay/internal/report"
 )
@@ -87,6 +88,21 @@ func (e *Engine) RunTask(ctx context.Context, taskName string) (*TaskResult, err
 	var reportPath string
 	if t.Report != nil && t.Report.Path != "" {
 		reportPath = filepath.Join(e.worktree, t.Report.Path)
+
+		// Two agents can drive one bay -- the protocol is stateless and the
+		// tools take a bay name, so nothing stops them -- and two runs of the
+		// same task there write the same file. Removing it, running, and
+		// reading it back is a read-modify-write on a shared path: interleave
+		// two and one run reads a file the other is still writing, or reads
+		// results it did not produce. Keyed by bay and task, so a bay's `unit`
+		// and `lint` still run at the same time and only genuine duplicates
+		// queue.
+		release, lerr := lockfile.Acquire("devbay-task-" + e.m.Project + "-" + e.bay + "-" + taskName)
+		if lerr != nil {
+			return nil, lerr
+		}
+		defer release()
+
 		_ = os.Remove(reportPath)
 		// The directory is created for the framework. Almost none of them will
 		// make it themselves -- Node's test runner, pytest and go test all
@@ -140,8 +156,9 @@ func (e *Engine) RunTask(ctx context.Context, taskName string) (*TaskResult, err
 			res.Total, res.Passed = parsed.Total, parsed.Passed
 			res.Failed, res.Skipped = parsed.Failed, parsed.Skipped
 			for i := range parsed.Failures {
-				parsed.Failures[i].Message = e.scrubText(parsed.Failures[i].Message)
-				parsed.Failures[i].Output = tail(e.scrubText(parsed.Failures[i].Output), 4<<10)
+				parsed.Failures[i].File = repoRelative(parsed.Failures[i].File)
+				parsed.Failures[i].Message = repoRelative(e.scrubText(parsed.Failures[i].Message))
+				parsed.Failures[i].Output = tail(repoRelative(e.scrubText(parsed.Failures[i].Output)), 4<<10)
 			}
 			res.Failures = parsed.Failures
 		}
@@ -270,6 +287,23 @@ func (e *Engine) execIn(ctx context.Context, id string, argv manifest.Argv, env 
 
 // taskWorkdir is where a task's command runs: the repository.
 func (e *Engine) taskWorkdir() string { return WorkspaceDir }
+
+// repoRelative rewrites container paths into repository-relative ones.
+//
+// A test runner reports the path it saw, which is inside the container. The
+// agent that receives the failure is outside it, and /workspace/api/server.js
+// does not exist there -- so the one field it needs in order to act, the file
+// to open, is the one field it cannot use. Stack traces in the message and
+// output carry the same paths, so they are rewritten too: an agent reads those
+// when the located failure is not enough.
+func repoRelative(s string) string {
+	if s == "" {
+		return s
+	}
+	// The trailing separator is part of the match so the replacement leaves a
+	// relative path rather than an absolute one rooted at /.
+	return strings.ReplaceAll(s, WorkspaceDir+"/", "")
+}
 
 // execThrowaway runs a command in a fresh container built like the service.
 func (e *Engine) execThrowaway(ctx context.Context, service string, argv manifest.Argv, env map[string]string) (int, string, error) {

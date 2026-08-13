@@ -34,6 +34,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	interp "github.com/compose-spec/compose-go/v2/interpolation"
 	"github.com/compose-spec/compose-go/v2/loader"
@@ -73,6 +74,11 @@ type Result struct {
 	// difference between a manifest that fails cleanly and one that fails
 	// mysteriously.
 	Gaps []string `json:"gaps"`
+	// Unverified records that `--verify` booted this proposal and it did not
+	// come up, with the failure. It is written into the file because the
+	// terminal line saying so scrolls away, and what is left behind afterwards
+	// is a manifest that looks exactly like one that worked.
+	Unverified string `json:"unverified,omitempty"`
 }
 
 // Detect examines a repository and proposes a manifest.
@@ -96,6 +102,7 @@ func Detect(ctx context.Context, dir string) (*Result, error) {
 	d.fromActions()
 	d.fromProcfile()
 	d.fromPackageJSON()
+	d.fromServiceTasks()
 	d.fromPython()
 	d.fromGo()
 
@@ -672,6 +679,39 @@ func (d *detector) fromCompose(ctx context.Context) {
 				s.Needs = append(s.Needs, slug(dep))
 			}
 
+			// A dependent saying `condition: service_completed_successfully`
+			// is the compose file stating that this service runs to
+			// completion. It is better evidence than anything convention can
+			// offer, and without it a migration is transcribed as a
+			// long-running service, given a health probe it can never satisfy
+			// because it has already exited, and reported as "exited 0 before
+			// becoming healthy" -- a failure whose cause is one line further
+			// up in the file devbay just read.
+			if composeRunsToCompletion(project, name) {
+				s.Kind = manifest.KindOneshot
+				s.Run = s.Start
+				s.Start = nil
+				d.note(SourceCompose, path, fmt.Sprintf(
+					"service %q runs to completion: another service waits for it with service_completed_successfully", name))
+			}
+
+			// The healthcheck the file already declares. Convention is the
+			// fallback for a service that has none, not a replacement for one
+			// that does: the author's own probe knows the credentials and the
+			// database name, and devbay's guess does not.
+			h, why := composeHealth(svc)
+			if h != nil {
+				s.Health = h
+				d.note(SourceCompose, path, fmt.Sprintf("health probe for %q from its healthcheck", name))
+				if forceProbeOverTCP(h) {
+					d.note(SourceCompose, path, fmt.Sprintf(
+						"health probe for %q was pointed at 127.0.0.1: as written it answers on the unix socket, "+
+							"which is up before the server accepts connections", name))
+				}
+			} else if why != "" {
+				d.gap("service %q: %s", name, why)
+			}
+
 			// Transcribed, because it is load-bearing. A compose file that
 			// cannot express "web starts after redis is answering" writes
 			// `restart: on-failure` instead, and dropping it turns a stack
@@ -697,6 +737,133 @@ func (d *detector) fromCompose(ctx context.Context) {
 			return // the first compose file found wins
 		}
 	}
+}
+
+// composeRunsToCompletion reports whether any service waits for this one to
+// exit successfully, which is compose's way of saying it is a oneshot.
+func composeRunsToCompletion(project *composetypes.Project, name string) bool {
+	for _, other := range project.Services {
+		for dep, cfg := range other.DependsOn {
+			if dep == name && cfg.Condition == "service_completed_successfully" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// composeHealth transcribes a compose healthcheck into devbay's form. It
+// returns the probe, or a reason it could not be transcribed.
+//
+// The first element of a compose test is a marker, and the two markers mean
+// genuinely different things. CMD is already an argv array and transcribes
+// exactly.
+//
+// CMD-SHELL is a shell string, and a manifest cannot hold one: R1 is that
+// there is no path from a manifest to a shell, and wrapping the string as
+// `/bin/sh -c ...` would drive straight through it -- as well as tripping R2
+// on every compose file that has a healthcheck, which is most of them, turning
+// zero-config setup into a manual approval.
+//
+// So the string is transcribed only when it is not really a shell command:
+// `pg_isready -U inkwell` is a plain argv that happens to be spelled as a
+// string, and splitting it is exact. Anything using the shell for what the
+// shell is for -- a variable, a pipe, a chain of commands -- is left alone,
+// with the reason recorded, because splitting `pg_isready -U $$POSTGRES_USER`
+// on spaces produces a probe that looks right and tests nothing.
+func composeHealth(svc composetypes.ServiceConfig) (*manifest.Health, string) {
+	h := svc.HealthCheck
+	if h == nil || h.Disable || len(h.Test) == 0 {
+		return nil, ""
+	}
+	out := &manifest.Health{}
+	switch h.Test[0] {
+	case "NONE":
+		// A disabled healthcheck is a statement, not an omission: the author
+		// turned it off. Adopting one would override that.
+		return nil, ""
+	case "CMD":
+		if len(h.Test) < 2 {
+			return nil, ""
+		}
+		out.Cmd = manifest.Argv(h.Test[1:])
+	default:
+		script := strings.TrimSpace(strings.Join([]string(h.Test[1:]), " "))
+		if h.Test[0] != "CMD-SHELL" {
+			// The bare string form, which compose treats as CMD-SHELL.
+			script = strings.TrimSpace(strings.Join([]string(h.Test), " "))
+		}
+		if script == "" {
+			return nil, ""
+		}
+		if !plainCommand(script) {
+			return nil, fmt.Sprintf("its healthcheck `%s` needs a shell, which a manifest cannot express (R1); "+
+				"write it as an argv list in `health.cmd`, or point `health.http` at an endpoint", script)
+		}
+		out.Cmd = manifest.Argv(strings.Fields(script))
+	}
+	// A start period is the author saying how long this service takes before
+	// its probe means anything, which is exactly what devbay's timeout is for.
+	if h.StartPeriod != nil {
+		out.Timeout = time.Duration(*h.StartPeriod).String()
+	}
+	return out, ""
+}
+
+// shellSyntax matches any character that makes a string a shell command rather
+// than a command line. Deliberately broad: a false positive costs a
+// transcription devbay falls back from and explains, and a false negative
+// produces a probe that silently tests the wrong thing.
+var shellSyntax = regexp.MustCompile(`[$` + "`" + `|&;<>(){}\[\]*?~!#\\'"\n]`)
+
+func plainCommand(s string) bool { return !shellSyntax.MatchString(s) }
+
+// forceProbeOverTCP repairs the one healthcheck that is both near-universal
+// and wrong, in place. It reports whether it changed anything.
+//
+// `pg_isready -U postgres` is what the postgres documentation shows and what
+// every compose file therefore contains, and it answers over the unix socket.
+// The image's entrypoint initializes the database by starting a temporary
+// server that listens on that socket and nothing else, so the probe passes,
+// the wave is declared finished, and every service that connects over the
+// network is refused for the next second or so. mysql does the same thing with
+// --skip-networking.
+//
+// This is transcription's one exception, and it is worth being clear about
+// why. Everywhere else, the author's file is better evidence than devbay's
+// guess. Here the author's file is describing a probe that does not mean what
+// it appears to mean, and compose gets away with it because it usually starts
+// one stack at a time -- while devbay's reason to exist is starting several at
+// once, which is exactly when the window opens. The repair is recorded in the
+// generated file's evidence, so it is visible rather than magic.
+func forceProbeOverTCP(h *manifest.Health) bool {
+	if h == nil || len(h.Cmd) == 0 {
+		return false
+	}
+	if !socketRacingProbe([]string(h.Cmd)) {
+		return false
+	}
+	h.Cmd = append(h.Cmd, "-h", "127.0.0.1")
+	return true
+}
+
+// socketRacingProbe reports whether an argv is one of the probes that answers
+// on a unix socket, with no host already named.
+func socketRacingProbe(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	switch filepath.Base(argv[0]) {
+	case "pg_isready", "mysqladmin":
+	default:
+		return false
+	}
+	for _, a := range argv {
+		if a == "-h" || a == "--host" || strings.HasPrefix(a, "--host=") || strings.HasPrefix(a, "-h=") {
+			return false
+		}
+	}
+	return true
 }
 
 // composeEnv is the environment interpolation draws on: the real environment,
@@ -845,14 +1012,65 @@ func (d *detector) fromActions() {
 				}
 				// `options: --health-cmd pg_isready` is a probe the repository
 				// already relies on, which beats anything inferred.
-				if cmd := healthCmdFrom(svc.Options); len(cmd) > 0 {
-					s.Health = &manifest.Health{Cmd: cmd}
+				health := healthCmdFrom(svc.Options)
+				if len(health) > 0 {
+					s.Health = &manifest.Health{Cmd: health}
+				}
+
+				// CI and compose describe the same stack, so the same database
+				// appears in both -- under different names, because a workflow
+				// names a service after its image and a compose file names it
+				// after its role. Adding both produces two postgres containers
+				// per bay, one of which nothing connects to, and the developer
+				// pays for it on every boot forever. What CI knows that
+				// compose often does not is the health command, so the
+				// duplicate is folded in rather than dropped.
+				if existing := d.equivalentService(s); existing != "" {
+					if d.m.Services[existing].Health == nil && s.Health != nil {
+						d.m.Services[existing].Health = s.Health
+						d.note(SourceActions, path, fmt.Sprintf(
+							"health probe for %q from the --health-cmd option on CI service %q", existing, svcName))
+					}
+					continue
 				}
 				d.m.Services[name] = s
 				d.note(SourceActions, path, fmt.Sprintf("service %q from image %s", name, svc.Image))
 			}
 		}
 	}
+}
+
+// equivalentService finds an already-detected service that is the same backing
+// service as the candidate, under a different name. It returns that name, or
+// empty when the candidate is genuinely new.
+//
+// Sameness is the same image reference plus no contradiction in the
+// environment they share: two postgres:16-alpine with the same POSTGRES_DB are
+// one database described twice, while two with different databases are two
+// databases and both are wanted. Matching on the image alone would collapse
+// those, and matching on the name would never fire at all, which is the state
+// this replaces.
+func (d *detector) equivalentService(cand *manifest.Service) string {
+	if cand.Image == "" {
+		return ""
+	}
+	for _, name := range sortedKeysOf(d.m.Services) {
+		s := d.m.Services[name]
+		if s.Image != cand.Image {
+			continue
+		}
+		contradicts := false
+		for k, v := range cand.Env {
+			if have, ok := s.Env[k]; ok && have != v {
+				contradicts = true
+				break
+			}
+		}
+		if !contradicts {
+			return name
+		}
+	}
+	return ""
 }
 
 // healthCmdFrom pulls the argv out of a `--health-cmd` option.
@@ -1023,6 +1241,94 @@ func (d *detector) fromPackageJSON() {
 		}
 		d.m.Tasks[task] = &manifest.Task{Run: manifest.Argv{pm, "run", name}, Needs: []string{}}
 		d.note(SourcePackageJSON, path, fmt.Sprintf("task %q from script %q", task, name))
+	}
+}
+
+// fromServiceTasks looks for test scripts inside each service's build context.
+//
+// A repository with a compose file usually keeps its code in subdirectories --
+// ./api and ./web, each with its own package.json -- and reading only the root
+// one finds nothing there. That produced manifests with zero tasks for exactly
+// the repositories devbay is best at, and `bay_run_task` is the tool the agent
+// interface rests on: with no tasks declared, an agent's only option is to run
+// the test command itself, in a checkout that something else is also using,
+// which is the situation devbay exists to end.
+func (d *detector) fromServiceTasks() {
+	reported := false
+	for _, name := range sortedKeysOf(d.m.Services) {
+		s := d.m.Services[name]
+		if s.Build == nil {
+			continue
+		}
+		sub := strings.TrimPrefix(filepath.ToSlash(s.Build.Context), "./")
+		if sub == "" || sub == "." {
+			continue // the root package.json is fromPackageJSON's job
+		}
+		dir := filepath.Join(d.dir, filepath.FromSlash(sub))
+		path := filepath.Join(dir, "package.json")
+		body, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var pkg packageJSON
+		if err := json.Unmarshal(body, &pkg); err != nil {
+			continue
+		}
+		// The lockfile that governs a workspace member is often the root one,
+		// so the package manager is read from the repository root and only
+		// overridden by what this package itself declares.
+		pm := packageManager(d.dir, pkg.PackageManager)
+
+		for _, script := range []string{"test", "test:unit", "lint", "typecheck"} {
+			if _, ok := pkg.Scripts[script]; !ok {
+				continue
+			}
+			task := slug(name + "-" + strings.ReplaceAll(script, ":", "-"))
+			if d.m.Tasks[task] != nil {
+				continue
+			}
+			d.m.Tasks[task] = &manifest.Task{
+				Run: runIn(pm, sub, script),
+				// A unit suite that needs a running stack is the exception,
+				// and declaring it here would boot containers for every task
+				// devbay guessed at. Empty is both the common case and the
+				// cheap one; a suite that needs more says so by hand.
+				Needs: []string{},
+				// Tasks run at the worktree root, which is not where this
+				// package lives, and in the primary service's container by
+				// default, which is not where its dependencies are installed.
+				In: name,
+			}
+			d.note(SourcePackageJSON, path, fmt.Sprintf("task %q from %s's %q script", task, sub, script))
+			// The command is the repository's own, so devbay cannot add the
+			// reporter flags that would make its failures typed without
+			// rewriting a script it does not own. Saying so is the difference
+			// between an agent that opens the failing file and one that reads
+			// output and guesses.
+			if !reported {
+				d.gap("tasks were detected but none declares `report:`, so failures come back as text rather " +
+					"than as {file, line, message}. Point `report.format` at what the runner writes -- junit is " +
+					"the usual answer, and most runners have a flag for it")
+				reported = true
+			}
+		}
+	}
+}
+
+// runIn builds the argv that runs a package script in a subdirectory, without
+// a shell and without changing the process's directory. Every package manager
+// spells this differently, and getting it wrong means the task runs at the
+// repository root and reports that the script does not exist.
+func runIn(pm, dir, script string) manifest.Argv {
+	switch pm {
+	case "pnpm":
+		return manifest.Argv{"pnpm", "--dir", dir, "run", script}
+	case "yarn":
+		return manifest.Argv{"yarn", "--cwd", dir, "run", script}
+	case "bun":
+		return manifest.Argv{"bun", "--cwd", dir, "run", script}
+	default:
+		return manifest.Argv{"npm", "--prefix", dir, "run", script}
 	}
 }
 
@@ -1248,10 +1554,18 @@ var knownHealth = []struct {
 	prefix string
 	health manifest.Health
 }{
-	{"postgres", manifest.Health{Cmd: manifest.Argv{"pg_isready"}}},
-	{"pgvector", manifest.Health{Cmd: manifest.Argv{"pg_isready"}}},
-	{"mysql", manifest.Health{Cmd: manifest.Argv{"mysqladmin", "ping"}}},
-	{"mariadb", manifest.Health{Cmd: manifest.Argv{"mysqladmin", "ping"}}},
+	// -h forces the probe over TCP. Both of these images initialize by
+	// starting a temporary server that listens on a unix socket only --
+	// postgres for initdb, mysql with --skip-networking -- and a probe that
+	// reaches that server reports the database as ready while nothing can
+	// connect to it over the network. Every dependent then fails with
+	// "connection refused" at the moment devbay declared the wave finished.
+	// The window is short, so it hides completely until several bays boot at
+	// once, which is the thing devbay is for.
+	{"postgres", manifest.Health{Cmd: manifest.Argv{"pg_isready", "-h", "127.0.0.1"}}},
+	{"pgvector", manifest.Health{Cmd: manifest.Argv{"pg_isready", "-h", "127.0.0.1"}}},
+	{"mysql", manifest.Health{Cmd: manifest.Argv{"mysqladmin", "ping", "-h", "127.0.0.1"}}},
+	{"mariadb", manifest.Health{Cmd: manifest.Argv{"mysqladmin", "ping", "-h", "127.0.0.1"}}},
 	{"redis", manifest.Health{Cmd: manifest.Argv{"redis-cli", "ping"}}},
 	{"valkey", manifest.Health{Cmd: manifest.Argv{"redis-cli", "ping"}}},
 	// mongosh only exists from MongoDB 5.0; before that the shell is `mongo`,

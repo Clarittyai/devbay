@@ -153,7 +153,7 @@ go test -short ./...         # skip anything needing Docker
 go test -race ./...          # the concurrency the tool exists for
 ```
 
-305 tests across 20 packages, race-clean.
+313 tests across 19 packages, race-clean — the count `go test ./... -list '.*'` reports.
 
 The suite is arranged so that the parts which can be tested without Docker are,
 and the parts that cannot are tested against real containers rather than mocks:
@@ -301,7 +301,9 @@ cmd/devbay/              CLI
 
 Services start in dependency waves: everything at the same depth starts at once, and a wave finishes when every service in it is healthy. A one-shot finishes by exiting zero; a long-running service finishes when its probe passes. The four-service test bay comes up in about a second.
 
-Health probes always run from the host against `127.0.0.1:<published port>`, never against a bay hostname — the daemon's own resolver cannot resolve those. Published ports bind to loopback only, so a bay and the credentials it holds are never exposed to the local network. Routes are published last, so a hostname never answers 502 while the bay is still coming up.
+Health probes always run from the host against `127.0.0.1:<published port>`, never against a bay hostname — the daemon's own resolver cannot resolve those. Published ports bind to loopback only, so no bay is reachable at `127.0.0.1:<port>` from anywhere but this machine. Routes are published last, so a hostname never answers 502 while the bay is still coming up.
+
+The proxy is the deliberate exception, and worth knowing about: it binds `:80` on **all** interfaces, because a bay URL that cannot be opened from a phone or a simulator is not much of a URL. So anything that can reach your machine on port 80 can reach a bay by asking for its hostname. On a home or office network that is the point; on a conference or café network it is not what you want, and `devbay doctor` says so.
 
 Teardown is a label query, not a list of remembered objects. Everything devbay creates carries `dev.devbay.*` labels and `Down` removes everything matching, which is the only approach that is still correct after a crash or a partial boot. An automated audit asserts zero orphaned containers, volumes, or networks.
 
