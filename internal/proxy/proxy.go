@@ -112,6 +112,23 @@ func (p *Proxy) Ensure(ctx context.Context, httpPort, adminPort int) error {
 	}
 	p.adminPort = adminPort
 
+	// One proxy serves the machine, so creating it is a race between every
+	// devbay process that finds it missing -- which is every one of them on a
+	// cold start, the first three bays after a reboot being the ordinary case.
+	// They all try, one wins, and the losers get "the container name
+	// /devbay-proxy is already in use" and fall through to continuing without
+	// hostname routing: their bays come up, print their URLs, and those URLs
+	// answer nothing. Held across find-then-create, because a check made
+	// before the lock is exactly the stale answer this prevents acting on.
+	//
+	// Separate from the routing-table lock: a caller publishing routes takes
+	// that one immediately after this returns, and flock is not reentrant.
+	release, err := lockfile.Acquire("devbay-proxy-container")
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	if id, running, err := p.find(ctx); err != nil {
 		return err
 	} else if id != "" {
@@ -159,6 +176,22 @@ func (p *Proxy) Ensure(ctx context.Context, httpPort, adminPort int) error {
 	for _, port := range candidates {
 		id, err := p.create(ctx, port, adminPort)
 		if err != nil {
+			// Someone created it between the check above and here, which the
+			// lock makes unlikely and does not make impossible: a stale lock
+			// file removed by hand, or another tool starting the container.
+			// The name conflict says the thing this call wanted now exists, so
+			// the answer is to use it rather than to report that the machine
+			// has no proxy while one is running on it.
+			if cerrdefs.IsConflict(err) || strings.Contains(err.Error(), "already in use") {
+				if existing, running, ferr := p.find(ctx); ferr == nil && existing != "" && running {
+					hp, ap := p.publishedPorts(ctx, existing)
+					if ap == p.adminPort {
+						p.HTTPPort = hp
+						p.adoptRoutes(ctx)
+						return p.syncRoutes(ctx)
+					}
+				}
+			}
 			lastErr = err
 			continue
 		}
