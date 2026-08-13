@@ -519,9 +519,21 @@ func permute(args []string) []string {
 	return append(flags, positional...)
 }
 
+// takesValue lists every flag devbay defines that is written as two words.
+//
+// It has to list all of them. permute moves flags ahead of positional
+// arguments so `devbay new mybay --alias oauth` works, and a value-taking flag
+// missing from here has its value mistaken for a positional argument and moved
+// away from the flag it belongs to: `mcp install --client codex --dry-run`
+// became `--client --dry-run codex`, and devbay reported that there is no
+// client called "--dry-run".
+//
+// Kept honest by a test that reads the flag definitions out of this package
+// and fails when one of them is not named here, because the failure otherwise
+// appears one flag at a time, long after the flag was added.
 func takesValue(flag string) bool {
 	switch strings.TrimLeft(flag, "-") {
-	case "alias", "branch", "from", "n", "socket":
+	case "alias", "branch", "from", "n", "socket", "client", "revoke":
 		return true
 	}
 	return false

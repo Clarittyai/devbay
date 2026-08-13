@@ -95,8 +95,23 @@ func cmdMCPInstall(args []string) error {
 		wrote++
 	}
 
-	if *dry {
+	// Only the clients this run is for. `--client codex` writing Cursor's rule
+	// file into the repository is a change nobody asked for, in a tool whose
+	// entire job is to be predictable about what it edits.
+	rules := mcp.RuleFiles
+	if *client != "" {
+		rules = nil
 		for _, f := range mcp.RuleFiles {
+			for _, c := range targets {
+				if f.Client == c.Name {
+					rules = append(rules, f)
+				}
+			}
+		}
+	}
+
+	if *dry {
+		for _, f := range rules {
 			fmt.Printf("  %s %-12s %s %s\n", dim("would write"), f.Client, dim("→"), filepath.Join(repoRoot, f.Path))
 		}
 		return nil
@@ -107,7 +122,7 @@ func cmdMCPInstall(args []string) error {
 	// list, so a repository that says nothing gets a plan built around `npm
 	// test` and the tools sit there unused.
 	if !*noRules && repoRoot != "" {
-		for _, f := range mcp.RuleFiles {
+		for _, f := range rules {
 			res, err := mcp.WriteRules(f, repoRoot)
 			if err != nil {
 				return fmt.Errorf("%s: %w", f.Path, err)

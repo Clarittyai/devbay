@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -170,5 +172,56 @@ func TestStateColourPassesTheStateThrough(t *testing.T) {
 		if got := stateColour(s); got != s {
 			t.Errorf("stateColour(%q) = %q; the state name must survive", s, got)
 		}
+	}
+}
+
+// Every value-taking flag must be known to permute.
+//
+// permute moves flags ahead of positional arguments, so a flag whose value it
+// does not know about has that value treated as positional and moved away from
+// its flag. `mcp install --client codex --dry-run` became `--client --dry-run
+// codex`. The source is read rather than a list being kept by hand, because a
+// hand-kept list is exactly what was already wrong here.
+func TestEveryValueTakingFlagIsKnownToPermute(t *testing.T) {
+	defined := regexp.MustCompile(`fs\.(?:String|Int|Duration)\("([a-z-]+)"`)
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checked int
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range defined.FindAllStringSubmatch(string(body), -1) {
+			checked++
+			if !takesValue(m[1]) {
+				t.Errorf("%s defines --%s, which takes a value, but takesValue does not know it: "+
+					"its value will be reordered away from the flag", e.Name(), m[1])
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("found no flag definitions; the pattern no longer matches the source")
+	}
+}
+
+// The shape that was broken, end to end through permute.
+func TestPermuteKeepsAFlagWithItsValue(t *testing.T) {
+	got := permute([]string{"--client", "codex", "--dry-run"})
+	want := []string{"--client", "codex", "--dry-run"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("permute = %v, want %v", got, want)
+	}
+	// The case permute exists for still works.
+	got = permute([]string{"mybay", "--alias", "oauth", "--no-boot"})
+	want = []string{"--alias", "oauth", "--no-boot", "mybay"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("permute = %v, want %v", got, want)
 	}
 }
