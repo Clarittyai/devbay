@@ -66,8 +66,12 @@ tidy-check: ## fail if go.mod is not tidy
 		echo "go.mod is not tidy; run: go mod tidy"; exit 1; \
 	fi
 
+.PHONY: claims-check
+claims-check: ## fail if a number devbay publishes about itself is out of date
+	@python3 scripts/claims.py
+
 .PHONY: check
-check: fmt-check vet tidy-check build test-all race ## everything CI runs
+check: fmt-check vet tidy-check claims-check build test-all race ## everything CI runs
 
 .PHONY: schema
 schema: build ## print the manifest JSON Schema

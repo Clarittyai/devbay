@@ -298,10 +298,10 @@ export const evidence = [
     figure: '29 of 35',
     label: 'real compose stacks devbay serves',
     detail:
-      'Every stack in docker/awesome-compose, copied unmodified, each compared with what docker compose up does with the same repository on the same machine. Compose serves 23. There is no stack compose runs that devbay does not.',
+      'Every stack in docker/awesome-compose, copied unmodified, each compared with what docker compose up does with the same repository on the same machine. Compose serves 23. There is no stack compose runs that devbay does not. Measured 2026-08-12 against v0.5.1, and being re-measured for the current release.',
   },
   {
-    figure: '313',
+    figure: '323',
     label: 'tests across 19 packages',
     detail:
       'Run under the race detector on every push. The integration packages talk to real Docker rather than a fake.',
