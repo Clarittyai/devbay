@@ -7,27 +7,18 @@ you can run five at once and they cannot touch each other.**
 [![Go Reference](https://pkg.go.dev/badge/github.com/Clarittyai/devbay.svg)](https://pkg.go.dev/github.com/Clarittyai/devbay)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Here is the bug that explains the whole tool. Two bays of one app, one cookie
-jar — because a browser keys cookies by host and ignores the port:
+Here is the bug that explains the whole tool. Two bays of one app, one browser.
 
-```console
-$ curl -c jar -b jar http://127.0.0.1:40160/login
-logged in to alpha
-$ curl -c jar -b jar http://127.0.0.1:41540/
-bay=beta host=127.0.0.1:41540 cookie=session=alpha-session   ← beta has alpha's session
-```
+![Two bays, one browser: on ports the second bay answers with the first one's session; on per-bay hostnames it does not](demo/cookie-jar.gif)
 
-The same two bays, the same jar, reached on the hostnames devbay gives them:
+Log in to `alpha` on its port, open `beta` on **its** port, and beta answers
+`cookie=session=alpha-session` — a browser keys cookies by host and ignores the
+port, so the two bays share one jar and clobber each other's sessions. Open the
+same two bays on the hostnames devbay gives them and beta answers
+`cookie=(none)`.
 
-```console
-$ curl -c jar -b jar http://alpha.cookies.localhost/login
-logged in to alpha
-$ curl -c jar -b jar http://beta.cookies.localhost/
-bay=beta host=beta.cookies.localhost cookie=(none)           ← kept apart
-```
-
-Run it yourself: `sh demo/cookie-jar.sh` boots both bays and prints exactly
-that. ([demo/](demo) — the scripts are also recordings.)
+That is a real recording of two real bays. `sh demo/cookie-jar.sh` runs it on
+your machine and prints the same thing ([demo/](demo)).
 
 ```sh
 curl -fsSL devbay.claritty.ai/install | sh
