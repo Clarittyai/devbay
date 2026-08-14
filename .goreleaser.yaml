@@ -39,6 +39,36 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# Homebrew. Commented out rather than shipped inert, because goreleaser fails
+# the whole release when the tap repository or the token is missing -- and a
+# release that does not happen is worse than a formula that does not exist yet.
+#
+# Two things have to be true before uncommenting, both outside this repository:
+#
+#   1. Clarittyai/homebrew-tap exists and is public.
+#   2. A secret named HOMEBREW_TAP_TOKEN holds a token with write access to it.
+#      The workflow's own GITHUB_TOKEN cannot push to another repository, which
+#      is the failure this comment exists to save you from finding at tag time.
+#
+# Then add `HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}` to the env of
+# the goreleaser step in .github/workflows/release.yml, and tag as usual.
+#
+# brews:
+#   - name: devbay
+#     repository:
+#       owner: Clarittyai
+#       name: homebrew-tap
+#       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+#     homepage: "https://devbay.claritty.ai"
+#     description: "Parallel, isolated local environments for coding agents"
+#     license: "Apache-2.0"
+#     # Not a dependency Homebrew can install: Docker Desktop, OrbStack and
+#     # Colima are alternatives and the choice is the developer's. `devbay
+#     # doctor` says so on first run.
+#     caveats: "devbay needs a container runtime. Run `devbay doctor` to check this machine."
+#     test: |
+#       system "#{bin}/devbay", "version"
+
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 

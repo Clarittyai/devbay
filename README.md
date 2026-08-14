@@ -1,16 +1,43 @@
 # devbay
 
-**Parallel, isolated local environments for coding agents.**
+**Every branch gets its own containers, database, ports and browser origin — so
+you can run five at once and they cannot touch each other.**
 
 [![CI](https://github.com/Clarittyai/devbay/actions/workflows/ci.yml/badge.svg)](https://github.com/Clarittyai/devbay/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/Clarittyai/devbay.svg)](https://pkg.go.dev/github.com/Clarittyai/devbay)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Status: working end to end. `devbay init` proposes a manifest, bays boot with their own hostname and browser origin, tasks return typed failures, and teardown leaves nothing behind. Driven by a CLI or by an agent over MCP.
+Here is the bug that explains the whole tool. Two bays of one app, one browser.
 
-Checked against forty real compose stacks and a set of real Procfile applications — each one compared with what `docker compose up` does with the same repository on the same machine, because that is the only baseline worth measuring against. On the last run devbay served 29 of 35 and compose 23, with nothing compose runs that devbay does not. See [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md#the-corpus-check); `scripts/corpus.sh` runs it.
+![Two bays, one browser: on ports the second bay answers with the first one's session; on per-bay hostnames it does not](demo/cookie-jar.gif)
+
+Log in to `alpha` on its port, open `beta` on **its** port, and beta answers
+`cookie=session=alpha-session` — a browser keys cookies by host and ignores the
+port, so the two bays share one jar and clobber each other's sessions. Open the
+same two bays on the hostnames devbay gives them and beta answers
+`cookie=(none)`.
+
+That is a real recording of two real bays. `sh demo/cookie-jar.sh` runs it on
+your machine and prints the same thing ([demo/](demo)).
+
+```sh
+curl -fsSL devbay.claritty.ai/install | sh
+```
+
+```sh
+devbay init                  # read the repo, propose a devbay.yaml
+devbay new add-search        # a bay: worktree, containers, database, hostname
+devbay run add-search unit   # typed failures, not stdout to scrape
+devbay url add-search        # open it
+devbay rm add-search         # and nothing is left behind
+```
+
+Driven by that CLI, or by an agent over MCP — ten tools, and it connects to
+Claude Code, Cursor and Codex.
 
 ---
+
+Checked against forty real compose stacks and a set of real Procfile applications — each one compared with what `docker compose up` does with the same repository on the same machine, because that is the only baseline worth measuring against. Measured on 2026-08-12 against v0.5.1, devbay served 29 of 35 and compose 23, with nothing compose runs that devbay does not. That figure predates the detection changes in v0.5.2 and is being re-measured; the two narrower checks that were run against v0.5.2 are in [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md#the-regression-check-after-the-2026-08-12-detection-changes). `scripts/corpus.sh` runs the full thing — on an idle machine, for the reason recorded there.
 
 **What it does and does not do:** [docs/CAPABILITIES.md](docs/CAPABILITIES.md)
 — including the limits and the unfinished parts. **Whether it actually does
@@ -153,7 +180,7 @@ go test -short ./...         # skip anything needing Docker
 go test -race ./...          # the concurrency the tool exists for
 ```
 
-313 tests across 19 packages, race-clean — the count `go test ./... -list '.*'` reports.
+323 tests across 19 packages, race-clean — the count `go test ./... -list '.*'` reports.
 
 The suite is arranged so that the parts which can be tested without Docker are,
 and the parts that cannot are tested against real containers rather than mocks:
