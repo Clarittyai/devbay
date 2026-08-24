@@ -3,7 +3,7 @@ module github.com/Clarittyai/devbay
 go 1.26.5
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.62.0
+	github.com/anthropics/anthropic-sdk-go v1.66.0
 	github.com/compose-spec/compose-go/v2 v2.14.0
 	github.com/containerd/errdefs v1.0.0
 	github.com/fsnotify/fsnotify v1.10.1
